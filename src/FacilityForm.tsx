@@ -11,12 +11,19 @@ import {
   Sparkles,
   Trash2,
 } from 'lucide-react';
-import { createFacility, setFacilityAvailability, updateFacility } from './actions';
+import {
+  createFacility,
+  deleteFacilityImage,
+  setFacilityAvailability,
+  updateFacility,
+  uploadFacilityImages,
+} from './actions';
 import { Modal } from './components';
 import { useRows } from './data';
 import {
   first,
   str,
+  type FacilityImage,
   type FacilityPricingMode,
   type Row,
   type Session,
@@ -42,6 +49,25 @@ type SlotEditor = {
   end: string;
   raw?: string;
 };
+
+const FACILITY_IMAGE_LIMIT = 6;
+
+type GalleryItem =
+  | { id: string; kind: 'stored'; image: FacilityImage; previewUrl: string }
+  | { id: string; kind: 'new'; file: File; previewUrl: string };
+
+function storedFacilityImages(row?: Row): FacilityImage[] {
+  const raw = row?.data.images;
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+    const candidate = value as Record<string, unknown>;
+    const url = str(candidate.url);
+    const storagePath = str(candidate.storagePath);
+    if (!url || !storagePath) return [];
+    return [{ url, storagePath, ...(str(candidate.name) ? { name: str(candidate.name) } : {}) }];
+  }).slice(0, FACILITY_IMAGE_LIMIT);
+}
 
 function toMinutes(value: string) {
   const match = value.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
@@ -123,7 +149,6 @@ function initialValues(row?: Row) {
     type: str(data.type),
     description: str(data.description),
     iconName: str(data.iconName),
-    imageUrl: str(data.imageUrl),
     pricingMode,
     isFree: pricingMode === 'free',
     price: typeof data.pricePerDay === 'number' ? String(data.pricePerDay) : '',
@@ -160,6 +185,20 @@ export function FacilityForm({
   const [slots, setSlots] = useState<SlotEditor[]>(() =>
     initial.timeSlots.map((value, id) => parseStoredSlot(value, id)),
   );
+  const legacyImageUrl = str(row?.data.imageUrl);
+  const initialStoredImages = useMemo(() => storedFacilityImages(row), [row]);
+  const [gallery, setGallery] = useState<GalleryItem[]>(() =>
+    initialStoredImages.map((image, index) => ({
+      id: `stored-${index}-${image.storagePath}`,
+      kind: 'stored' as const,
+      image,
+      previewUrl: image.url,
+    })),
+  );
+  const [legacyImageRemoved, setLegacyImageRemoved] = useState(false);
+  const [galleryTouched, setGalleryTouched] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const objectUrls = useRef(new Set<string>());
   const nextSlot = useRef(slots.length);
   const [buildingId, setBuildingId] = useState('');
   const [busy, setBusy] = useState(false);
@@ -185,6 +224,13 @@ export function FacilityForm({
     };
   }, []);
 
+  useEffect(() => {
+    return () => {
+      for (const url of objectUrls.current) URL.revokeObjectURL(url);
+      objectUrls.current.clear();
+    };
+  }, []);
+
   const buildingOptions = buildings.rows
     .map((building) => ({
       id: building.id,
@@ -193,6 +239,67 @@ export function FacilityForm({
     .sort((a, b) => a.name.localeCompare(b.name));
 
   const slotStrings = useMemo(() => slots.map(serializeSlot), [slots]);
+  const primaryPreview = gallery[0]?.previewUrl || (!legacyImageRemoved ? legacyImageUrl : '');
+
+  function selectImages(files: FileList | null) {
+    if (!files?.length) return;
+    const incoming = Array.from(files);
+    if (gallery.length + incoming.length > FACILITY_IMAGE_LIMIT) {
+      setError(`A facility can have at most ${FACILITY_IMAGE_LIMIT} images.`);
+      if (fileInput.current) fileInput.current.value = '';
+      return;
+    }
+
+    const invalid = incoming.find(
+      (file) => !['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size <= 0 || file.size > 5 * 1024 * 1024,
+    );
+    if (invalid) {
+      setError('Choose JPG, PNG or WebP images no larger than 5 MB each.');
+      if (fileInput.current) fileInput.current.value = '';
+      return;
+    }
+
+    const next = incoming.map((file, index): GalleryItem => {
+      const previewUrl = typeof URL.createObjectURL === 'function' ? URL.createObjectURL(file) : '';
+      if (previewUrl.startsWith('blob:')) objectUrls.current.add(previewUrl);
+      return {
+        id: `new-${Date.now()}-${index}-${file.name}`,
+        kind: 'new',
+        file,
+        previewUrl,
+      };
+    });
+    setGallery((current) => [...current, ...next]);
+    setGalleryTouched(true);
+    setLegacyImageRemoved(true);
+    setError('');
+    if (fileInput.current) fileInput.current.value = '';
+  }
+
+  function removeGalleryItem(id: string) {
+    setGallery((current) => {
+      const target = current.find((item) => item.id === id);
+      if (target?.kind === 'new' && target.previewUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(target.previewUrl);
+        objectUrls.current.delete(target.previewUrl);
+      }
+      return current.filter((item) => item.id !== id);
+    });
+    setGalleryTouched(true);
+  }
+
+  function makePrimary(id: string) {
+    setGallery((current) => {
+      const index = current.findIndex((item) => item.id === id);
+      if (index <= 0) return current;
+      const next = [...current];
+      const [selected] = next.splice(index, 1);
+      next.unshift(selected);
+      return next;
+    });
+    setGalleryTouched(true);
+    setLegacyImageRemoved(true);
+  }
 
   const previewPrice =
     values.pricingMode === 'free'
@@ -257,7 +364,7 @@ export function FacilityForm({
       if (typeOption === 'Other' && !values.type.trim()) throw Error('Specify a facility type.');
 
       const fields: UpdateFacilityInput = {};
-      for (const key of ['name', 'type', 'description', 'iconName', 'imageUrl'] as const) {
+      for (const key of ['name', 'type', 'description', 'iconName'] as const) {
         const value = values[key].trim();
         if (!row || value !== initial[key]) {
           if ((key === 'name' || key === 'type') && !value)
@@ -327,7 +434,9 @@ export function FacilityForm({
         throw Error('Select a building before saving.');
 
       const availabilityChanged = row && values.isAvailable !== initial.isAvailable;
-      if (row && !Object.keys(fields).length && !availabilityChanged) {
+      const hasNewImages = gallery.some((item) => item.kind === 'new');
+      const galleryChanged = galleryTouched || hasNewImages || legacyImageRemoved;
+      if (row && !Object.keys(fields).length && !availabilityChanged && !galleryChanged) {
         setError('No changes to save.');
         return;
       }
@@ -336,15 +445,37 @@ export function FacilityForm({
       setBusy(true);
 
       if (row) {
-        if (Object.keys(fields).length) await updateFacility(s, row.id, fields);
-        if (availabilityChanged) await setFacilityAvailability(s, row.id, values.isAvailable);
+        const uploaded: FacilityImage[] = hasNewImages
+          ? await uploadFacilityImages(
+              s,
+              row.id,
+              gallery.filter((item): item is Extract<GalleryItem, { kind: 'new' }> => item.kind === 'new').map((item) => item.file),
+            )
+          : [];
+        const removedStored = initialStoredImages.filter(
+          (image) => !gallery.some((item) => item.kind === 'stored' && item.image.storagePath === image.storagePath),
+        );
+        const finalImages: FacilityImage[] = [];
+        let uploadedIndex = 0;
+        for (const item of gallery) {
+          finalImages.push(item.kind === 'stored' ? item.image : uploaded[uploadedIndex++]);
+        }
+
+        try {
+          if (galleryChanged) fields.images = finalImages;
+          if (Object.keys(fields).length) await updateFacility(s, row.id, fields);
+          if (availabilityChanged) await setFacilityAvailability(s, row.id, values.isAvailable);
+        } catch (error) {
+          await Promise.allSettled(uploaded.map((image) => deleteFacilityImage(s, row.id, image)));
+          throw error;
+        }
+        await Promise.allSettled(removedStored.map((image) => deleteFacilityImage(s, row.id, image)));
       } else {
-        await createFacility(s, {
+        const created = await createFacility(s, {
           name: fields.name!,
           type: fields.type!,
           description: fields.description,
           iconName: fields.iconName,
-          imageUrl: fields.imageUrl,
           timeSlots: fields.timeSlots!,
           isFree: fields.isFree!,
           pricingMode: fields.pricingMode!,
@@ -358,6 +489,15 @@ export function FacilityForm({
           buildingId,
           isAvailable: values.isAvailable,
         });
+
+        if (gallery.some((item) => item.kind === 'new')) {
+          const uploaded = await uploadFacilityImages(
+            s,
+            created.id,
+            gallery.filter((item): item is Extract<GalleryItem, { kind: 'new' }> => item.kind === 'new').map((item) => item.file),
+          );
+          await updateFacility(s, created.id, { images: uploaded });
+        }
       }
 
       if (mounted.current) onSaved();
@@ -510,18 +650,79 @@ export function FacilityForm({
                     </label>
                   </div>
 
-                  <label>
-                    <span>Image URL</span>
-                    <div className="facility-input-with-icon">
-                      <ImageIcon size={17} />
-                      <input
-                        type="url"
-                        placeholder="https://example.com/facility.jpg"
-                        value={values.imageUrl}
-                        onChange={(e) => setValues({ ...values, imageUrl: e.target.value })}
-                      />
+                  <div className="facility-image-manager">
+                    <div className="facility-image-manager-head">
+                      <div>
+                        <span>Facility photos</span>
+                        <small>Upload up to 6 JPG, PNG or WebP images. The first photo is used as the primary image.</small>
+                      </div>
+                      <span className="facility-image-limit">{gallery.length}/{FACILITY_IMAGE_LIMIT}</span>
                     </div>
-                  </label>
+
+                    <input
+                      ref={fileInput}
+                      className="sr-only"
+                      id="facility-images"
+                      aria-label="Facility photos"
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      multiple
+                      onChange={(event) => selectImages(event.target.files)}
+                    />
+
+                    <div className="facility-image-upload-row">
+                      <button
+                        type="button"
+                        className="facility-image-upload"
+                        disabled={gallery.length >= FACILITY_IMAGE_LIMIT}
+                        onClick={() => fileInput.current?.click()}
+                      >
+                        <ImageIcon size={18} /> Select photos
+                      </button>
+                      <small>Maximum 5 MB per image.</small>
+                    </div>
+
+                    {!gallery.length && legacyImageUrl && !legacyImageRemoved && (
+                      <div className="facility-legacy-image">
+                        <img src={legacyImageUrl} alt="Existing facility" />
+                        <div>
+                          <strong>Existing primary image</strong>
+                          <small>This is a legacy image URL. Upload new photos to create a managed gallery.</small>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setLegacyImageRemoved(true);
+                            setGalleryTouched(true);
+                          }}
+                        >Remove</button>
+                      </div>
+                    )}
+
+                    {!!gallery.length && (
+                      <div className="facility-image-grid" aria-label="Selected facility photos">
+                        {gallery.map((item, index) => (
+                          <div className={`facility-image-thumb ${index === 0 ? 'primary' : ''}`} key={item.id}>
+                            {item.previewUrl ? <img src={item.previewUrl} alt={`Facility photo ${index + 1}`} /> : <div className="facility-thumb-placeholder"><ImageIcon size={24} /></div>}
+                            <span className="facility-thumb-number">{index + 1}</span>
+                            {index === 0 && <span className="facility-primary-badge">Primary</span>}
+                            <div className="facility-thumb-actions">
+                              {index > 0 && (
+                                <button type="button" onClick={() => makePrimary(item.id)}>Set primary</button>
+                              )}
+                              <button
+                                type="button"
+                                aria-label={`Remove facility photo ${index + 1}`}
+                                onClick={() => removeGalleryItem(item.id)}
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
 
                   {buildings.error && (
                     <p role="alert" className="form-error">
@@ -770,11 +971,12 @@ export function FacilityForm({
                   <span className="facility-preview-label">LIVE PREVIEW</span>
                   <div className="facility-preview-card">
                     <div className="facility-preview-image">
-                      {values.imageUrl.trim() ? (
-                        <img src={values.imageUrl.trim()} alt="" />
+                      {primaryPreview ? (
+                        <img src={primaryPreview} alt="" />
                       ) : (
                         <div><ImageIcon size={31} /><span>Facility image</span></div>
                       )}
+                      {gallery.length > 1 && <span className="facility-preview-count">1 / {gallery.length}</span>}
                       <span className={`facility-preview-status ${values.isAvailable ? 'active' : 'inactive'}`}>
                         {values.isAvailable ? 'Active' : 'Inactive'}
                       </span>

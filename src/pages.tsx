@@ -182,6 +182,52 @@ function facilityTags(data: Data) {
 }
 
 
+function facilityImageUrls(data: Data) {
+  const urls: string[] = [];
+  if (Array.isArray(data.images)) {
+    for (const value of data.images) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+      const url = safeUrl((value as Record<string, unknown>).url);
+      if (url && !urls.includes(url)) urls.push(url);
+    }
+  }
+  const legacy = safeUrl(data.imageUrl);
+  if (legacy && !urls.includes(legacy)) urls.unshift(legacy);
+  return urls.slice(0, 6);
+}
+
+function FacilityGallery({ data, title }: { data: Data; title: string }) {
+  const images = facilityImageUrls(data);
+  const [selected, setSelected] = useState(0);
+  useEffect(() => setSelected(0), [data]);
+  if (!images.length) return null;
+  const active = images[Math.min(selected, images.length - 1)];
+  return (
+    <section className="facility-detail-gallery" aria-label={`${title} photos`}>
+      <div className="facility-detail-main-image">
+        <img src={active} alt={`${title} photo ${Math.min(selected, images.length - 1) + 1}`} />
+        {images.length > 1 && <span>{Math.min(selected, images.length - 1) + 1} / {images.length}</span>}
+      </div>
+      {images.length > 1 && (
+        <div className="facility-detail-thumbnails">
+          {images.map((url, index) => (
+            <button
+              type="button"
+              className={index === selected ? 'active' : ''}
+              aria-label={`View facility photo ${index + 1}`}
+              aria-pressed={index === selected}
+              onClick={() => setSelected(index)}
+              key={url}
+            >
+              <img src={url} alt="" />
+            </button>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function facilityScheduleSummary(data: Data) {
   const explicit = str(data.operatingHours) || str(data.hours);
   const slots = Array.isArray(data.timeSlots)
@@ -425,10 +471,13 @@ function ScopedModule({
                 module === 'facilities' ? (
                   <article className="facility-card facility-card-v2" key={row.id}>
                     <div className="facility-image facility-image-v2" onClick={() => setParams({ record: row.id })}>
-                      {safeUrl(row.data.imageUrl) ? (
-                        <img loading="lazy" src={safeUrl(row.data.imageUrl)} alt={titleOf(row.data)} />
+                      {facilityImageUrls(row.data)[0] ? (
+                        <img loading="lazy" src={facilityImageUrls(row.data)[0]} alt={titleOf(row.data)} />
                       ) : (
                         <div className="facility-image-placeholder"><Building2 size={52} /><span>Add facility photo</span></div>
+                      )}
+                      {facilityImageUrls(row.data).length > 1 && (
+                        <span className="facility-image-count">1 / {facilityImageUrls(row.data).length}</span>
                       )}
                       <span className="facility-status-float"><Pill value={moduleStatus(module, row.data)} /></span>
                     </div>
@@ -766,6 +815,7 @@ function RecordDetails({
     );
   return (
     <Modal title={titleOf(d)} onClose={onClose}>
+      {module === 'facilities' && <FacilityGallery data={d} title={titleOf(d)} />}
       <Pill value={moduleStatus(module, d)} />
       <DetailFields
         data={module === 'facilities' ? { ...d, status: undefined, pricePerDay: undefined } : d}

@@ -34,13 +34,25 @@ export interface Row {
 /** V1 write fields only; existing amenity documents may contain additional legacy fields. */
 export type FacilityPricingMode = 'free' | 'flat' | 'resident_type';
 
+export interface FacilityImage {
+  /** Public download URL. The first image in FacilityEditableFields.images is the primary image. */
+  url: string;
+  /** Firebase Storage object path used for scoped deletion and maintenance. */
+  storagePath: string;
+  /** Original file name, when available. */
+  name?: string;
+}
+
 /** V1 write fields only; existing amenity documents may contain additional legacy fields. */
 export interface FacilityEditableFields {
   name: string;
   type: string;
   description?: string;
   iconName?: string;
+  /** Legacy/compatibility primary image URL. Kept synchronized with images[0] when images is written. */
   imageUrl?: string;
+  /** Ordered gallery. images[0] is the primary image. Maximum six images. */
+  images?: FacilityImage[];
   timeSlots: string[];
   isAvailable: boolean;
 
@@ -58,13 +70,6 @@ export interface CreateFacilityInput extends Omit<FacilityEditableFields, 'timeS
   timeSlots?: string[];
 }
 
-/** Omitted fields are preserved. Community, building, attribution and advanced fields are immutable here. */
-
-export interface CreateFacilityInput extends Omit<FacilityEditableFields, 'timeSlots'> {
-  buildingId: string;
-  /** Omit or pass [] when no booking slots are offered. */
-  timeSlots?: string[];
-}
 /** Omitted fields are preserved. Community, building, attribution and advanced fields are immutable here. */
 export type UpdateFacilityInput = Partial<FacilityEditableFields>;
 export interface VisitorDocument {

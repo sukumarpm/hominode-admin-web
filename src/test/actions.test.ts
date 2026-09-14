@@ -4,9 +4,11 @@ import {
   createFacility,
   createVisitor,
   currentAuthority,
+  deleteFacilityImage,
   setFacilityAvailability,
   submitProof,
   updateFacility,
+  uploadFacilityImages,
 } from '../actions';
 import { type CreateFacilityInput, type Data, type UpdateFacilityInput } from '../models';
 import { adminData, makeSession, residentData } from './fixtures';
@@ -25,6 +27,9 @@ const m = vi.hoisted(() => ({
   add: vi.fn(),
   update: vi.fn(),
   upload: vi.fn(),
+  downloadUrl: vi.fn(),
+  deleteObject: vi.fn(),
+  storageRef: vi.fn(),
   call: vi.fn(),
 }));
 vi.mock('../firebase', () => ({
@@ -44,7 +49,13 @@ vi.mock('firebase/firestore', () => ({
   where: vi.fn(),
   setDoc: vi.fn(),
 }));
-vi.mock('firebase/storage', () => ({ ref: vi.fn(), uploadBytes: m.upload, getBlob: vi.fn() }));
+vi.mock('firebase/storage', () => ({
+  ref: m.storageRef,
+  uploadBytes: m.upload,
+  getDownloadURL: m.downloadUrl,
+  deleteObject: m.deleteObject,
+  getBlob: vi.fn(),
+}));
 beforeEach(() => {
   vi.clearAllMocks();
   m.user = {
@@ -53,6 +64,9 @@ beforeEach(() => {
     getIdTokenResult: async () => ({ signInProvider: 'phone' }),
   };
   m.profile = { ...residentData };
+  m.storageRef.mockImplementation((_storage: unknown, path: string) => path);
+  m.downloadUrl.mockImplementation(async (path: string) => `https://storage.example/${encodeURIComponent(path)}`);
+  m.deleteObject.mockResolvedValue(undefined);
   m.get.mockImplementation(async (path: string) => ({
     data: () =>
       path.startsWith('communities/')
@@ -495,6 +509,110 @@ describe('facility writes', () => {
     expect(records['amenities/facility-1']).toMatchObject({ isFree: false, pricePerDay: 250 });
   });
 
+  it('accepts an ordered facility gallery and keeps legacy imageUrl synchronized to its primary image', async () => {
+    const images = [
+      {
+        url: 'https://storage.example/primary.jpg',
+        storagePath: 'facility_images/community-1/facility-1/primary.jpg',
+        name: 'primary.jpg',
+      },
+      {
+        url: 'https://storage.example/second.webp',
+        storagePath: 'facility_images/community-1/facility-1/second.webp',
+        name: 'second.webp',
+      },
+    ];
+
+    await updateFacility(makeSession('admin'), 'facility-1', { images });
+
+    expect(m.update).toHaveBeenCalledExactlyOnceWith('amenities/facility-1', {
+      images,
+      imageUrl: images[0].url,
+      updatedAt: 'SERVER_TIMESTAMP',
+    });
+  });
+
+  it('clears legacy imageUrl when the ordered facility gallery is cleared', async () => {
+    await updateFacility(makeSession('admin'), 'facility-1', { images: [] });
+    expect(m.update).toHaveBeenCalledExactlyOnceWith('amenities/facility-1', {
+      images: [],
+      imageUrl: '',
+      updatedAt: 'SERVER_TIMESTAMP',
+    });
+  });
+
+  it('rejects gallery metadata outside the target facility storage scope', async () => {
+    await expect(
+      updateFacility(makeSession('admin'), 'facility-1', {
+        images: [
+          {
+            url: 'https://storage.example/wrong.jpg',
+            storagePath: 'facility_images/community-2/facility-1/wrong.jpg',
+          },
+        ],
+      }),
+    ).rejects.toThrow('outside this facility');
+    expect(m.update).not.toHaveBeenCalled();
+  });
+
+  it('uploads multiple validated facility images into the facility storage scope', async () => {
+    const files = [
+      new File(['jpg'], 'front.jpg', { type: 'image/jpeg' }),
+      new File(['webp'], 'inside.webp', { type: 'image/webp' }),
+    ];
+
+    const result = await uploadFacilityImages(makeSession('admin'), 'facility-1', files);
+
+    expect(m.upload).toHaveBeenCalledTimes(2);
+    expect(m.downloadUrl).toHaveBeenCalledTimes(2);
+    expect(result).toHaveLength(2);
+    expect(result[0]).toMatchObject({ name: 'front.jpg' });
+    expect(result[1]).toMatchObject({ name: 'inside.webp' });
+    for (const image of result)
+      expect(image.storagePath).toMatch(/^facility_images\/community-1\/facility-1\/.+\.(jpg|webp)$/);
+    expect(result.every((image) => image.url.startsWith('https://storage.example/'))).toBe(true);
+  });
+
+  it.each([
+    new File(['gif'], 'animated.gif', { type: 'image/gif' }),
+    new File([], 'empty.jpg', { type: 'image/jpeg' }),
+  ])('rejects unsupported or empty facility image files before uploading', async (file) => {
+    await expect(uploadFacilityImages(makeSession('admin'), 'facility-1', [file])).rejects.toThrow(
+      'JPG, PNG or WebP',
+    );
+    expect(m.upload).not.toHaveBeenCalled();
+  });
+
+  it('rejects more than six facility images before uploading', async () => {
+    const files = Array.from(
+      { length: 7 },
+      (_, index) => new File(['x'], `${index}.jpg`, { type: 'image/jpeg' }),
+    );
+    await expect(uploadFacilityImages(makeSession('admin'), 'facility-1', files)).rejects.toThrow(
+      'at most 6 images',
+    );
+    expect(m.upload).not.toHaveBeenCalled();
+  });
+
+  it('deletes only storage objects belonging to the selected facility', async () => {
+    const image = {
+      url: 'https://storage.example/photo.jpg',
+      storagePath: 'facility_images/community-1/facility-1/photo.jpg',
+      name: 'photo.jpg',
+    };
+    await deleteFacilityImage(makeSession('admin'), 'facility-1', image);
+    expect(m.deleteObject).toHaveBeenCalledExactlyOnceWith(image.storagePath);
+
+    m.deleteObject.mockClear();
+    await expect(
+      deleteFacilityImage(makeSession('admin'), 'facility-1', {
+        ...image,
+        storagePath: 'facility_images/community-1/other-facility/photo.jpg',
+      }),
+    ).rejects.toThrow('outside this facility');
+    expect(m.deleteObject).not.toHaveBeenCalled();
+  });
+
   const invalidFields: [string, unknown][] = [
     ['name', '  '],
     ['name', null],
@@ -512,6 +630,10 @@ describe('facility writes', () => {
     ['imageUrl', 'https://'],
     ['imageUrl', '/relative.jpg'],
     ['imageUrl', 'https:example.com'],
+    ['images', 'not-an-array'],
+    ['images', new Array(7).fill({ url: 'https://example.com/a.jpg', storagePath: 'facility_images/community-1/facility-1/a.jpg' })],
+    ['images', [{ url: '/relative.jpg', storagePath: 'facility_images/community-1/facility-1/a.jpg' }]],
+    ['images', [{ url: 'https://example.com/a.jpg', storagePath: '../outside.jpg' }]],
     ['isFree', 'true'],
     ['isAvailable', 1],
     ['pricePerDay', -1],

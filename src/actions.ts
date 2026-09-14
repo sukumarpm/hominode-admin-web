@@ -11,11 +11,12 @@ import {
   updateDoc,
   where,
 } from 'firebase/firestore';
-import { getBlob, ref, uploadBytes } from 'firebase/storage';
+import { deleteObject, getBlob, getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import { call, firebase } from './firebase';
 import {
   type CreateFacilityInput,
   type Data,
+  type FacilityImage,
   type FacilityPricingMode,
   first,
   type Session,
@@ -79,12 +80,95 @@ function facilityPricingMode(value: unknown): FacilityPricingMode {
     throw Error('Pricing mode must be free, flat, or resident_type.');
   return value;
 }
+
+const FACILITY_IMAGE_LIMIT = 6;
+const FACILITY_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+const FACILITY_IMAGE_TYPES: Record<string, string> = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+};
+
+function facilityHttpUrl(value: unknown, label: string) {
+  const text = facilityString(value, label, true);
+  if (!/^https?:\/\//i.test(text))
+    throw Error(`${label} must be an http:// or https:// URL.`);
+
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    throw Error(`${label} must be an http:// or https:// URL.`);
+  }
+  if (!['http:', 'https:'].includes(url.protocol) || !url.hostname)
+    throw Error(`${label} must be an http:// or https:// URL.`);
+  return text;
+}
+
+function facilityImage(value: unknown, index: number): FacilityImage {
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw Error(`Facility image ${index + 1} must be an object.`);
+
+  const candidate = value as Record<string, unknown>;
+  const allowed = new Set(['url', 'storagePath', 'name']);
+  for (const key of Object.keys(candidate)) {
+    if (!allowed.has(key)) throw Error(`Facility image field is not supported: ${key}`);
+  }
+
+  const url = facilityHttpUrl(candidate.url, `Facility image ${index + 1} URL`);
+  const storagePath = facilityString(
+    candidate.storagePath,
+    `Facility image ${index + 1} storage path`,
+    true,
+  );
+  if (storagePath.startsWith('/') || storagePath.includes('..'))
+    throw Error(`Facility image ${index + 1} storage path is invalid.`);
+
+  const name = Object.hasOwn(candidate, 'name')
+    ? facilityString(candidate.name, `Facility image ${index + 1} name`)
+    : '';
+  return { url, storagePath, ...(name ? { name } : {}) };
+}
+
+function facilityImages(value: unknown): FacilityImage[] {
+  if (!Array.isArray(value)) throw Error('Facility images must be an array.');
+  if (value.length > FACILITY_IMAGE_LIMIT)
+    throw Error(`A facility can have at most ${FACILITY_IMAGE_LIMIT} images.`);
+  const images = value.map(facilityImage);
+  const paths = new Set(images.map((image) => image.storagePath));
+  if (paths.size !== images.length) throw Error('Facility images cannot contain duplicate storage paths.');
+  return images;
+}
+
+function facilityImagePrefix(communityId: string, amenityId: string) {
+  return `facility_images/${communityId}/${amenityId}/`;
+}
+
+function assertFacilityImagePath(communityId: string, amenityId: string, path: string) {
+  if (!path.startsWith(facilityImagePrefix(communityId, amenityId)))
+    throw Error('Facility image is outside this facility.');
+}
+
+function facilityImageFile(file: File) {
+  const ext = FACILITY_IMAGE_TYPES[file.type];
+  if (!ext || file.size <= 0 || file.size > FACILITY_IMAGE_MAX_BYTES)
+    throw Error('Choose JPG, PNG or WebP images no larger than 5 MB each.');
+  return ext;
+}
+
+function randomImageId() {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
+    byte.toString(16).padStart(2, '0'),
+  ).join('');
+}
 const facilityEditableFields = [
   'name',
   'type',
   'description',
   'iconName',
   'imageUrl',
+  'images',
   'timeSlots',
   'isAvailable',
   'isFree',
@@ -121,25 +205,23 @@ function facilityFields(values: UpdateFacilityInput): Data {
       fields[key] = facilityPrice(value, label);
     } else if (key === 'timeSlots') {
       if (!Array.isArray(value)) throw Error('Time slots must be an array of nonempty strings.');
-      fields[key] = Array.from(value, (slot) => facilityString(slot, 'Time slot', true));
+      fields.timeSlots = Array.from(value as readonly unknown[], (slot) =>
+        facilityString(slot, 'Time slot', true),
+      );
+    } else if (key === 'images') {
+      fields.images = facilityImages(value);
     } else {
       const text = facilityString(value, key, key === 'name' || key === 'type');
-      if (key === 'imageUrl' && text) {
-        let url: URL;
-        try {
-          url = new URL(text);
-        } catch {
-          throw Error('Image URL must be an http:// or https:// URL.');
-        }
-        if (
-          !/^https?:\/\//i.test(text) ||
-          !['http:', 'https:'].includes(url.protocol) ||
-          !url.hostname
-        )
-          throw Error('Image URL must be an http:// or https:// URL.');
-      }
+      if (key === 'imageUrl' && text) facilityHttpUrl(text, 'Image URL');
       fields[key] = text;
     }
+  }
+
+  // The ordered gallery is authoritative when supplied. Keep the legacy primary URL in sync so
+  // older resident/mobile clients continue to render the same primary facility image.
+  if (Object.hasOwn(fields, 'images')) {
+    const images = fields.images as FacilityImage[];
+    fields.imageUrl = images[0]?.url || '';
   }
   return fields;
 }
@@ -226,6 +308,67 @@ async function facilityTarget(session: Session, amenityId: string) {
   return { record, data };
 }
 
+/** Uploads up to six validated facility images into the selected community/facility Storage scope. */
+export async function uploadFacilityImages(
+  session: Session,
+  amenityId: string,
+  files: readonly File[],
+): Promise<FacilityImage[]> {
+  const id = facilityId(amenityId, 'Facility ID');
+  const { data } = await facilityTarget(session, id);
+  const communityId = facilityString(data.communityId, 'Community ID', true);
+
+  if (!Array.isArray(files) || !files.length) throw Error('Choose at least one facility image.');
+  if (files.length > FACILITY_IMAGE_LIMIT)
+    throw Error(`A facility can have at most ${FACILITY_IMAGE_LIMIT} images.`);
+
+  const prepared = Array.from(files, (file) => ({ file, ext: facilityImageFile(file) }));
+  const uploaded: FacilityImage[] = [];
+  const uploadedPaths: string[] = [];
+
+  try {
+    for (const { file, ext } of prepared) {
+      const path = `${facilityImagePrefix(communityId, id)}${randomImageId()}.${ext}`;
+      const object = ref(firebase().storage, path);
+      await uploadBytes(object, file, {
+        contentType: file.type,
+        customMetadata: {
+          communityId,
+          facilityId: id,
+          uploadedBy: session.uid,
+        },
+      });
+      uploadedPaths.push(path);
+      uploaded.push({
+        url: await getDownloadURL(object),
+        storagePath: path,
+        ...(file.name ? { name: file.name } : {}),
+      });
+    }
+    return uploaded;
+  } catch (error) {
+    // Avoid leaving newly uploaded objects behind when a later upload/download-URL lookup fails.
+    await Promise.allSettled(
+      uploadedPaths.map((path) => deleteObject(ref(firebase().storage, path))),
+    );
+    throw error;
+  }
+}
+
+/** Deletes one facility image only when its Storage path belongs to the current facility/community. */
+export async function deleteFacilityImage(
+  session: Session,
+  amenityId: string,
+  image: FacilityImage,
+) {
+  const id = facilityId(amenityId, 'Facility ID');
+  const { data } = await facilityTarget(session, id);
+  const communityId = facilityString(data.communityId, 'Community ID', true);
+  const validated = facilityImage(image, 0);
+  assertFacilityImagePath(communityId, id, validated.storagePath);
+  await deleteObject(ref(firebase().storage, validated.storagePath));
+}
+
 /** Partial V1 edits; unknown input fields are rejected and stored legacy fields are preserved. */
 export async function updateFacility(
   session: Session,
@@ -237,6 +380,11 @@ export async function updateFacility(
   for (const key of Object.keys(values)) {
     if (!facilityEditableFields.some((field) => field === key))
       throw Error('Facility field is not editable: ' + key);
+  }
+  if (Object.hasOwn(fields, 'images')) {
+    const communityId = facilityString(data.communityId, 'Community ID', true);
+    for (const image of fields.images as FacilityImage[])
+      assertFacilityImagePath(communityId, facilityId(amenityId, 'Facility ID'), image.storagePath);
   }
   // Validate existing pricing only when pricing is edited, so unrelated legacy edits still work.
   // Validate pricing only when a pricing field is edited.

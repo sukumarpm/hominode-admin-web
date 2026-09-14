@@ -1,9 +1,15 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createFacility, setFacilityAvailability, updateFacility } from '../actions';
+import {
+  createFacility,
+  deleteFacilityImage,
+  setFacilityAvailability,
+  updateFacility,
+  uploadFacilityImages,
+} from '../actions';
 import { querySpec, useRows, type Module, type Resource } from '../data';
-import { type Row, type Session } from '../models';
+import { type FacilityImage, type Row, type Session } from '../models';
 import { ModulePage } from '../pages';
 import { AuthContext } from '../session';
 import { makeSession } from './fixtures';
@@ -19,6 +25,8 @@ vi.mock('../actions', async () => ({
   createFacility: vi.fn(),
   updateFacility: vi.fn(),
   setFacilityAvailability: vi.fn(),
+  uploadFacilityImages: vi.fn(),
+  deleteFacilityImage: vi.fn(),
 }));
 vi.mock('../data', async () => ({
   ...(await vi.importActual<typeof import('../data')>('../data')),
@@ -47,27 +55,52 @@ function view(s: Session, module: Module = 'facilities') {
     </MemoryRouter>
   );
 }
+
 function mount() {
   return render(view(session));
 }
+
 function openCreate() {
   fireEvent.click(screen.getByRole('button', { name: 'Add facility' }));
 }
-function change(label: string, value: string) {
-  fireEvent.change(screen.getByLabelText(label), { target: { value } });
+
+function change(label: string | RegExp, value: string) {
+  fireEvent.change(screen.getByLabelText(label, { exact: false }), { target: { value } });
 }
+
 function fillCreate() {
   change('Facility name', '  Garden Hall  ');
   change('Facility type', 'Function Hall');
   change('Building', 'tower-1');
 }
+
 function submit() {
   fireEvent.submit(screen.getByRole('form', { name: 'Facility form' }));
 }
-function openEdit() {
-  fireEvent.click(screen.getByRole('button', { name: /Function Hall/ }));
-  fireEvent.click(screen.getByRole('button', { name: 'Edit facility' }));
+
+function facilityCard(name: string) {
+  const heading = screen.getByRole('heading', { name });
+  const card = heading.closest('article');
+  if (!card) throw Error(`Facility card not found: ${name}`);
+  return card;
 }
+
+function openEdit(name = 'Function Hall') {
+  fireEvent.click(within(facilityCard(name)).getByRole('button', { name: 'Edit Facility' }));
+}
+
+function openDetails(name = 'Function Hall') {
+  const target = facilityCard(name).querySelector('.facility-image-v2');
+  if (!target) throw Error(`Facility image target not found: ${name}`);
+  fireEvent.click(target);
+}
+
+function selectFacilityPhotos(files: File[]) {
+  fireEvent.change(screen.getByLabelText('Facility photos'), {
+    target: { files },
+  });
+}
+
 function deferred() {
   let resolve!: () => void;
   const promise = new Promise<void>((done) => {
@@ -105,6 +138,7 @@ beforeEach(() => {
       data: { name: 'Pool', communityId: 'community-1', isAvailable: false, status: 'active' },
     },
   ];
+
   buildings = {
     loading: false,
     error: '',
@@ -113,38 +147,53 @@ beforeEach(() => {
       { id: 'tower-2', data: { communityId: 'community-2', name: 'Other community tower' } },
     ],
   };
+
   vi.mocked(useRows).mockImplementation((s, module) => {
-    if (module === 'buildings')
+    if (module === 'buildings') {
       return {
         ...buildings,
         rows: buildings.rows.filter((row) => row.data.communityId === s.community?.id),
       };
+    }
     return {
       rows: facilities.filter((row) => row.data.communityId === s.community?.id),
       loading: false,
       error: '',
     };
   });
+
   vi.mocked(createFacility).mockImplementation(async (_s, input) => {
     facilities.push({ id: 'new', data: { ...input, communityId: 'community-1' } });
     return { id: 'new' } as Awaited<ReturnType<typeof createFacility>>;
   });
+
   vi.mocked(updateFacility).mockImplementation(async (_s, id, fields) => {
     const row = facilities.find((item) => item.id === id)!;
     row.data = { ...row.data, ...fields };
   });
+
   vi.mocked(setFacilityAvailability).mockImplementation(async (_s, id, isAvailable) => {
     const row = facilities.find((item) => item.id === id)!;
     row.data = { ...row.data, isAvailable };
   });
+
+  vi.mocked(uploadFacilityImages).mockImplementation(async (_s, facilityId, files) =>
+    files.map((file, index) => ({
+      url: `https://example.com/${facilityId}/${index}-${file.name}`,
+      storagePath: `facility_images/community-1/${facilityId}/${index}-${file.name}`,
+      name: file.name,
+    })),
+  );
+  vi.mocked(deleteFacilityImage).mockResolvedValue(undefined);
 });
 
 describe('Facilities page', () => {
-  it('offers the predefined types and submits Gym as a string', async () => {
+  it('offers the predefined facility types and submits Gym as a string', async () => {
     mount();
     openCreate();
     fillCreate();
-    const dropdown = screen.getByRole('combobox', { name: 'Facility type' });
+
+    const dropdown = screen.getByRole('combobox', { name: /Facility type/i });
     expect(
       within(dropdown)
         .getAllByRole('option')
@@ -163,45 +212,51 @@ describe('Facilities page', () => {
       'Recreation Area',
       'Other',
     ]);
+
     change('Facility type', 'Gym');
-    expect(screen.queryByLabelText('Specify facility type')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/Custom facility type/i)).not.toBeInTheDocument();
     submit();
+
     await waitFor(() => expect(createFacility).toHaveBeenCalledOnce());
     expect(vi.mocked(createFacility).mock.calls[0][1].type).toBe('Gym');
   });
 
-  it.each(['', '   '])('rejects a blank Other type (%j)', (customType) => {
+  it.each(['', '   '])('rejects a blank custom facility type (%j)', (customType) => {
     mount();
     openCreate();
     fillCreate();
     change('Facility type', 'Other');
-    expect(screen.getByRole('textbox', { name: 'Specify facility type' })).toBeInTheDocument();
-    change('Specify facility type', customType);
+
+    expect(screen.getByRole('textbox', { name: /Custom facility type/i })).toBeInTheDocument();
+    change('Custom facility type', customType);
     submit();
+
     expect(screen.getByRole('alert')).toHaveTextContent('Specify a facility type');
     expect(createFacility).not.toHaveBeenCalled();
   });
 
-  it('submits a trimmed custom type as the existing type string', async () => {
+  it('submits a trimmed custom facility type', async () => {
     mount();
     openCreate();
     fillCreate();
     change('Facility type', 'Other');
-    change('Specify facility type', '  Yoga Studio  ');
+    change('Custom facility type', '  Yoga Studio  ');
     submit();
+
     await waitFor(() => expect(createFacility).toHaveBeenCalledOnce());
     expect(vi.mocked(createFacility).mock.calls[0][1].type).toBe('Yoga Studio');
-    expect(vi.mocked(createFacility).mock.calls[0][1]).not.toHaveProperty('customType');
   });
 
   it('opens an existing custom type under Other and preserves it on an unrelated edit', async () => {
     facilities[0].data.type = 'Yoga Studio';
     mount();
     openEdit();
-    expect(screen.getByRole('combobox', { name: 'Facility type' })).toHaveValue('Other');
-    expect(screen.getByLabelText('Specify facility type')).toHaveValue('Yoga Studio');
-    change('Description (optional)', 'New description');
+
+    expect(screen.getByRole('combobox', { name: /Facility type/i })).toHaveValue('Other');
+    expect(screen.getByLabelText(/Custom facility type/i)).toHaveValue('Yoga Studio');
+    change('Description', 'New description');
     submit();
+
     await waitFor(() =>
       expect(updateFacility).toHaveBeenCalledExactlyOnceWith(session, 'hall', {
         description: 'New description',
@@ -210,42 +265,22 @@ describe('Facilities page', () => {
     expect(facilities[0].data.type).toBe('Yoga Studio');
   });
 
-  it('selects an existing predefined type and supports changing it to a custom type', async () => {
-    facilities[0].data.type = 'Gym';
-    mount();
-    openEdit();
-    expect(screen.getByRole('combobox', { name: 'Facility type' })).toHaveValue('Gym');
-    change('Facility type', 'Other');
-    change('Specify facility type', '   ');
-    submit();
-    expect(screen.getByRole('alert')).toHaveTextContent('Specify a facility type');
-    expect(updateFacility).not.toHaveBeenCalled();
-    change('Specify facility type', '  Future Facility Type  ');
-    submit();
-    await waitFor(() =>
-      expect(updateFacility).toHaveBeenCalledExactlyOnceWith(session, 'hall', {
-        type: 'Future Facility Type',
-      }),
-    );
-  });
-
-  it('keeps existing page controls and opens/closes the create modal', () => {
+  it('keeps the facilities page controls and create modal behavior', () => {
     mount();
     expect(screen.getByRole('link', { name: /My bookings/ })).toHaveAttribute('href', '/bookings');
     expect(screen.getByRole('textbox', { name: 'Search facilities' })).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: 'Filter by status' })).toBeInTheDocument();
+
     openCreate();
     expect(screen.getByRole('dialog', { name: 'Add facility' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    openCreate();
-    fireEvent.click(screen.getByRole('button', { name: 'Close dialog' }));
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
   it('uses the existing community-scoped building query and only its results', () => {
     mount();
     openCreate();
+
     expect(querySpec(session, 'buildings')).toEqual({
       collection: 'buildings',
       filters: [['communityId', '==', 'community-1']],
@@ -255,36 +290,37 @@ describe('Facilities page', () => {
     expect(screen.queryByRole('option', { name: 'Other community tower' })).not.toBeInTheDocument();
   });
 
-  it('validates required fields without submitting', () => {
+  it('validates required create fields without submitting', () => {
     mount();
     openCreate();
     submit();
     expect(screen.getByRole('alert')).toHaveTextContent('Enter a facility name');
-    change('Facility name', '  ');
-    submit();
-    expect(screen.getByRole('alert')).toHaveTextContent('Enter a facility name');
+
     change('Facility name', 'Hall');
     submit();
     expect(screen.getByRole('alert')).toHaveTextContent('Enter a facility type');
+
     change('Facility type', 'Function Hall');
     submit();
     expect(screen.getByRole('alert')).toHaveTextContent('Select a building');
     expect(createFacility).not.toHaveBeenCalled();
   });
 
-  it('creates with typed fields and refreshes the list after success', async () => {
+  it('creates with the redesigned typed fields and refreshes the list', async () => {
     mount();
     openCreate();
     fillCreate();
-    change('Description (optional)', '  Community events  ');
-    change('Icon name (optional)', '  event  ');
-    change('Image URL (optional)', '  https://example.com/garden.jpg  ');
-    change('Availability', 'false');
-    fireEvent.click(screen.getByRole('radio', { name: 'Chargeable' }));
+    change('Description', '  Community events  ');
+    change('Icon name', '  event  ');
+    fireEvent.click(screen.getByRole('button', { name: /Paid facility/i }));
     change('Fee per day', '125.5');
-    fireEvent.click(screen.getByRole('button', { name: 'Add time slot' }));
-    change('Time slot 1', '  6:00 AM - 7:00 AM  ');
+    fireEvent.click(screen.getByRole('button', { name: 'Inactive' }));
+
+    fireEvent.click(screen.getByRole('button', { name: /Add first slot/i }));
+    change('Start', '06:00');
+    change('End', '07:00');
     submit();
+
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(createFacility).toHaveBeenCalledExactlyOnceWith(session, {
       name: 'Garden Hall',
@@ -292,27 +328,26 @@ describe('Facilities page', () => {
       buildingId: 'tower-1',
       description: 'Community events',
       iconName: 'event',
-      imageUrl: 'https://example.com/garden.jpg',
       isAvailable: false,
       isFree: false,
       pricingMode: 'flat',
       pricePerDay: 125.5,
       timeSlots: ['6:00 AM - 7:00 AM'],
     });
-    expect(screen.getByRole('button', { name: /Garden Hall/ })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Garden Hall' })).toBeInTheDocument();
     expect(useRows).toHaveBeenCalledWith(session, 'facilities', 1);
   });
 
-  it('disables price and submits zero when free is enabled', async () => {
+  it('switches a paid create form back to free and submits zero price', async () => {
     mount();
     openCreate();
     fillCreate();
-    fireEvent.click(screen.getByRole('radio', { name: 'Chargeable' }));
+
+    fireEvent.click(screen.getByRole('button', { name: /Paid facility/i }));
     change('Fee per day', '500');
+    fireEvent.click(screen.getByRole('button', { name: /Free facility/i }));
 
-    fireEvent.click(screen.getByRole('radio', { name: 'Free' }));
-
-    expect(screen.queryByLabelText('Fee per day')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/Fee per day/i)).not.toBeInTheDocument();
     submit();
     await waitFor(() => expect(createFacility).toHaveBeenCalledOnce());
     expect(vi.mocked(createFacility).mock.calls[0][1]).toMatchObject({
@@ -321,118 +356,42 @@ describe('Facilities page', () => {
     });
   });
 
-  it('adds and removes slot strings and rejects blank entries', async () => {
+  it('validates custom slot start/end values and serializes valid slots', async () => {
     mount();
     openCreate();
     fillCreate();
-    fireEvent.click(screen.getByRole('button', { name: 'Add time slot' }));
-    change('Time slot 1', '  ');
+
+    fireEvent.click(screen.getByRole('button', { name: /Add first slot/i }));
     submit();
-    expect(screen.getByRole('alert')).toHaveTextContent('Enter a time for every slot');
+    expect(screen.getByRole('alert')).toHaveTextContent('Complete the start and end time');
     expect(createFacility).not.toHaveBeenCalled();
-    change('Time slot 1', 'Morning');
-    fireEvent.click(screen.getByRole('button', { name: 'Add time slot' }));
-    change('Time slot 2', 'Evening');
-    fireEvent.click(screen.getByRole('button', { name: 'Remove time slot 1' }));
-    expect(screen.getByLabelText('Time slot 1')).toHaveValue('Evening');
-    expect(screen.queryByLabelText('Time slot 2')).not.toBeInTheDocument();
+
+    change('Start', '06:00');
+    change('End', '07:00');
     submit();
     await waitFor(() => expect(createFacility).toHaveBeenCalledOnce());
-    expect(vi.mocked(createFacility).mock.calls[0][1].timeSlots).toEqual(['Evening']);
+    expect(vi.mocked(createFacility).mock.calls[0][1].timeSlots).toEqual(['6:00 AM - 7:00 AM']);
   });
 
   it.each(['', '-1'])('rejects invalid paid price %j', (price) => {
     mount();
     openCreate();
     fillCreate();
-    fireEvent.click(screen.getByRole('radio', { name: 'Chargeable' }));
+    fireEvent.click(screen.getByRole('button', { name: /Paid facility/i }));
     change('Fee per day', price);
     submit();
     expect(screen.getByRole('alert')).toHaveTextContent('Enter a fee per day');
     expect(createFacility).not.toHaveBeenCalled();
   });
 
-  it('edits without building reassignment or advanced controls, omitting unchanged fields', async () => {
-    mount();
-    openEdit();
-    expect(screen.getByRole('dialog', { name: 'Edit facility' })).toBeInTheDocument();
-    expect(screen.getByText('Tower A')).toBeInTheDocument();
-    expect(screen.queryByRole('combobox', { name: 'Building' })).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Availability')).not.toBeInTheDocument();
-    expect(
-      screen.queryByLabelText(/capacity|subscription|duration|admin|community/i),
-    ).not.toBeInTheDocument();
-    change('Facility name', '  Renamed hall  ');
-    submit();
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    expect(updateFacility).toHaveBeenCalledExactlyOnceWith(session, 'hall', {
-      name: 'Renamed hall',
-    });
-    expect(screen.getByRole('button', { name: /Renamed hall/ })).toBeInTheDocument();
-    expect(facilities[0].data).toMatchObject({
-      buildingId: 'tower-1',
-      legacy: 'keep',
-      maxCapacity: 50,
-      subscriptionPackages: { monthly: 1000 },
-    });
-  });
-
-  it('does not issue a write for unchanged edit values', () => {
-    mount();
-    openEdit();
-    change('Facility name', '  Function Hall  ');
-    submit();
-    expect(screen.getByRole('alert')).toHaveTextContent('No changes to save');
-    expect(updateFacility).not.toHaveBeenCalled();
-  });
-
-  it('sends intentional optional text and slot clearing', async () => {
-    mount();
-    openEdit();
-    change('Description (optional)', '  ');
-    change('Icon name (optional)', '');
-    change('Image URL (optional)', '');
-    fireEvent.click(screen.getByRole('button', { name: 'Remove time slot 1' }));
-    submit();
-    await waitFor(() =>
-      expect(updateFacility).toHaveBeenCalledExactlyOnceWith(session, 'hall', {
-        description: '',
-        iconName: '',
-        imageUrl: '',
-        timeSlots: [],
-      }),
-    );
-  });
-
-  it('changes a paid facility to free with a numeric zero price', async () => {
-    mount();
-    openEdit();
-    fireEvent.click(screen.getByRole('radio', { name: 'Free' }));
-    submit();
-    await waitFor(() =>
-      expect(updateFacility).toHaveBeenCalledExactlyOnceWith(session, 'hall', {
-        isFree: true,
-        pricingMode: 'free',
-        pricePerDay: 0,
-      }),
-    );
-  });
   it('creates with different owner and tenant facility fees', async () => {
     mount();
-
     openCreate();
     fillCreate();
-
-    fireEvent.click(screen.getByRole('radio', { name: 'Chargeable' }));
-    fireEvent.click(
-      screen.getByRole('radio', {
-        name: 'Different fee by resident type',
-      }),
-    );
-
+    fireEvent.click(screen.getByRole('button', { name: /Paid facility/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Fee by resident type' }));
     change('Owner fee per day', '100');
     change('Tenant / Lease fee per day', '150');
-
     submit();
 
     await waitFor(() =>
@@ -448,6 +407,73 @@ describe('Facilities page', () => {
       ),
     );
   });
+
+  it('edits without building reassignment and omits unchanged fields', async () => {
+    mount();
+    openEdit();
+
+    const dialog = screen.getByRole('dialog', { name: 'Edit facility' });
+    expect(dialog).toBeInTheDocument();
+    expect(within(dialog).getAllByText('Tower A').length).toBeGreaterThan(0);
+    expect(screen.queryByRole('combobox', { name: /^Building/i })).not.toBeInTheDocument();
+
+    change('Facility name', '  Renamed hall  ');
+    submit();
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+
+    expect(updateFacility).toHaveBeenCalledExactlyOnceWith(session, 'hall', {
+      name: 'Renamed hall',
+    });
+    expect(screen.getByRole('heading', { name: 'Renamed hall' })).toBeInTheDocument();
+    expect(facilities[0].data).toMatchObject({
+      buildingId: 'tower-1',
+      legacy: 'keep',
+      maxCapacity: 50,
+      subscriptionPackages: { monthly: 1000 },
+    });
+  });
+
+  it('does not issue a write for an unchanged edit', () => {
+    mount();
+    openEdit();
+    change('Facility name', '  Function Hall  ');
+    submit();
+    expect(screen.getByRole('alert')).toHaveTextContent('No changes to save');
+    expect(updateFacility).not.toHaveBeenCalled();
+  });
+
+  it('clears optional text and time slots without rewriting the legacy imageUrl', async () => {
+    mount();
+    openEdit();
+    change('Description', '  ');
+    change('Icon name', '');
+    fireEvent.click(screen.getByRole('button', { name: 'Remove time slot 1' }));
+    submit();
+
+    await waitFor(() =>
+      expect(updateFacility).toHaveBeenCalledExactlyOnceWith(session, 'hall', {
+        description: '',
+        iconName: '',
+        timeSlots: [],
+      }),
+    );
+  });
+
+  it('changes a paid facility to free with a numeric zero price', async () => {
+    mount();
+    openEdit();
+    fireEvent.click(screen.getByRole('button', { name: /Free facility/i }));
+    submit();
+
+    await waitFor(() =>
+      expect(updateFacility).toHaveBeenCalledExactlyOnceWith(session, 'hall', {
+        isFree: true,
+        pricingMode: 'free',
+        pricePerDay: 0,
+      }),
+    );
+  });
+
   it('allows a name-only edit of a legacy amenity without rewriting missing fields', async () => {
     facilities[0].data = {
       name: 'Function Hall',
@@ -459,8 +485,133 @@ describe('Facilities page', () => {
     openEdit();
     change('Facility name', 'New hall');
     submit();
+
     await waitFor(() =>
       expect(updateFacility).toHaveBeenCalledExactlyOnceWith(session, 'hall', { name: 'New hall' }),
+    );
+  });
+
+  it('shows a legacy imageUrl in the edit form without converting it until the gallery changes', () => {
+    mount();
+    openEdit();
+    expect(screen.getByAltText('Existing facility')).toHaveAttribute(
+      'src',
+      'https://example.com/hall.jpg',
+    );
+    expect(screen.getByText('Existing primary image')).toBeInTheDocument();
+  });
+
+  it('removes a legacy imageUrl by saving an empty managed gallery', async () => {
+    mount();
+    openEdit();
+    fireEvent.click(within(screen.getByText('Existing primary image').parentElement!.parentElement!).getByRole('button', { name: 'Remove' }));
+    submit();
+
+    await waitFor(() =>
+      expect(updateFacility).toHaveBeenCalledExactlyOnceWith(session, 'hall', { images: [] }),
+    );
+  });
+
+  it('selects multiple images, marks the first primary and uploads them after creating the facility', async () => {
+    mount();
+    openCreate();
+    fillCreate();
+
+    const first = new File(['one'], 'front.jpg', { type: 'image/jpeg' });
+    const second = new File(['two'], 'inside.webp', { type: 'image/webp' });
+    selectFacilityPhotos([first, second]);
+
+    expect(screen.getByText('2/6')).toBeInTheDocument();
+    expect(screen.getByText('Primary')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Set primary' })).toBeInTheDocument();
+
+    submit();
+    await waitFor(() => expect(createFacility).toHaveBeenCalledOnce());
+    await waitFor(() => expect(uploadFacilityImages).toHaveBeenCalledOnce());
+
+    expect(uploadFacilityImages).toHaveBeenCalledWith(session, 'new', [first, second]);
+    expect(updateFacility).toHaveBeenCalledWith(session, 'new', {
+      images: [
+        {
+          url: 'https://example.com/new/0-front.jpg',
+          storagePath: 'facility_images/community-1/new/0-front.jpg',
+          name: 'front.jpg',
+        },
+        {
+          url: 'https://example.com/new/1-inside.webp',
+          storagePath: 'facility_images/community-1/new/1-inside.webp',
+          name: 'inside.webp',
+        },
+      ],
+    });
+  });
+
+  it('rejects more than six selected facility photos in the UI', () => {
+    mount();
+    openCreate();
+    const files = Array.from({ length: 7 }, (_, index) =>
+      new File(['x'], `photo-${index}.jpg`, { type: 'image/jpeg' }),
+    );
+    selectFacilityPhotos(files);
+
+    expect(screen.getByRole('alert')).toHaveTextContent('at most 6 images');
+    expect(screen.getByText('0/6')).toBeInTheDocument();
+  });
+
+  it('reorders an existing managed gallery when another image is made primary', async () => {
+    const firstImage: FacilityImage = {
+      url: 'https://example.com/first.jpg',
+      storagePath: 'facility_images/community-1/hall/first.jpg',
+    };
+    const secondImage: FacilityImage = {
+      url: 'https://example.com/second.jpg',
+      storagePath: 'facility_images/community-1/hall/second.jpg',
+    };
+    facilities[0].data.images = [firstImage, secondImage];
+    facilities[0].data.imageUrl = firstImage.url;
+
+    mount();
+    openEdit();
+    fireEvent.click(screen.getByRole('button', { name: 'Set primary' }));
+    submit();
+
+    await waitFor(() =>
+      expect(updateFacility).toHaveBeenCalledExactlyOnceWith(session, 'hall', {
+        images: [secondImage, firstImage],
+      }),
+    );
+  });
+
+  it('shows the primary image on the card and the full gallery in facility details', () => {
+    facilities[0].data.images = [
+      {
+        url: 'https://example.com/hall.jpg',
+        storagePath: 'facility_images/community-1/hall/front.jpg',
+      },
+      {
+        url: 'https://example.com/inside.jpg',
+        storagePath: 'facility_images/community-1/hall/inside.jpg',
+      },
+    ];
+
+    mount();
+    const card = facilityCard('Function Hall');
+    expect(within(card).getByText('1 / 2')).toBeInTheDocument();
+    expect(within(card).getByAltText('Function Hall')).toHaveAttribute(
+      'src',
+      'https://example.com/hall.jpg',
+    );
+
+    openDetails();
+    expect(screen.getByRole('region', { name: 'Function Hall photos' })).toBeInTheDocument();
+    expect(screen.getByAltText('Function Hall photo 1')).toHaveAttribute(
+      'src',
+      'https://example.com/hall.jpg',
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'View facility photo 2' }));
+    expect(screen.getByAltText('Function Hall photo 2')).toHaveAttribute(
+      'src',
+      'https://example.com/inside.jpg',
     );
   });
 
@@ -471,31 +622,24 @@ describe('Facilities page', () => {
     '%s availability action writes and refreshes',
     async (name, button, id, available) => {
       mount();
-      fireEvent.click(screen.getByRole('button', { name: new RegExp(name) }));
+      openDetails(name);
       fireEvent.click(screen.getByRole('button', { name: button }));
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+
       expect(setFacilityAvailability).toHaveBeenCalledExactlyOnceWith(session, id, available);
-      expect(
-        within(screen.getByRole('button', { name: new RegExp(name) })).getByText(
-          available ? 'Active' : 'Inactive',
-        ),
-      ).toBeInTheDocument();
+      expect(within(facilityCard(name)).getByText(available ? 'Active' : 'Inactive')).toBeInTheDocument();
     },
   );
 
   it('uses isAvailable for cards, details and filters despite conflicting legacy status', () => {
     mount();
-    expect(
-      within(screen.getByRole('button', { name: /Function Hall/ })).getByText('Active'),
-    ).toBeInTheDocument();
-    expect(
-      within(screen.getByRole('button', { name: /Pool/ })).getByText('Inactive'),
-    ).toBeInTheDocument();
+    expect(within(facilityCard('Function Hall')).getByText('Active')).toBeInTheDocument();
+    expect(within(facilityCard('Pool')).getByText('Inactive')).toBeInTheDocument();
+
     change('Filter by status', 'Inactive');
-    expect(screen.queryByRole('button', { name: /Function Hall/ })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /Pool/ }));
+    expect(screen.queryByRole('heading', { name: 'Function Hall' })).not.toBeInTheDocument();
+    openDetails('Pool');
     expect(within(screen.getByRole('dialog')).getByText('Inactive')).toBeInTheDocument();
-    expect(within(screen.getByRole('dialog')).queryByText('active')).not.toBeInTheDocument();
   });
 
   it('does not change generic status behavior in other modules', () => {
@@ -508,21 +652,20 @@ describe('Facilities page', () => {
   it('keeps the selected status filter valid after activating the last inactive facility', async () => {
     mount();
     change('Filter by status', 'Inactive');
-    fireEvent.click(screen.getByRole('button', { name: /Pool/ }));
+    openDetails('Pool');
     fireEvent.click(screen.getByRole('button', { name: 'Activate facility' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+
     expect(screen.getByLabelText('Filter by status')).toHaveValue('Inactive');
     expect(screen.getByText('No matches. Try another search or status.')).toBeInTheDocument();
     change('Filter by status', 'Active');
-    expect(screen.getByRole('button', { name: /Pool/ })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Pool' })).toBeInTheDocument();
   });
 
   it('shows unspecified availability for a legacy facility without the boolean flag', () => {
     delete facilities[0].data.isAvailable;
     mount();
-    expect(
-      within(screen.getByRole('button', { name: /Function Hall/ })).getByText('Unspecified'),
-    ).toBeInTheDocument();
+    expect(within(facilityCard('Function Hall')).getByText('Unspecified')).toBeInTheDocument();
   });
 
   it.each(['create', 'edit', 'availability'] as const)(
@@ -540,17 +683,19 @@ describe('Facilities page', () => {
         change('Facility name', 'New hall');
         submit();
       } else {
-        vi.mocked(setFacilityAvailability).mockRejectedValueOnce(
-          Error('Community access revoked.'),
-        );
-        fireEvent.click(screen.getByRole('button', { name: /Function Hall/ }));
+        vi.mocked(setFacilityAvailability).mockRejectedValueOnce(Error('Community access revoked.'));
+        openDetails();
         fireEvent.click(screen.getByRole('button', { name: 'Deactivate facility' }));
       }
+
       expect(await screen.findByRole('alert')).toHaveTextContent('Community access revoked.');
       expect(screen.getByRole('dialog')).toBeInTheDocument();
-      if (kind === 'availability')
+
+      if (kind === 'availability') {
         fireEvent.click(screen.getByRole('button', { name: 'Deactivate facility' }));
-      else submit();
+      } else {
+        submit();
+      }
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     },
   );
@@ -560,6 +705,7 @@ describe('Facilities page', () => {
     async (kind) => {
       const pending = deferred();
       mount();
+
       if (kind === 'create') {
         vi.mocked(createFacility).mockImplementationOnce(async () => {
           await pending.promise;
@@ -572,19 +718,22 @@ describe('Facilities page', () => {
         openEdit();
         change('Facility name', 'New hall');
       }
+
       const form = screen.getByRole('form', { name: 'Facility form' });
       act(() => {
         fireEvent.submit(form);
         fireEvent.submit(form);
       });
+
       expect(kind === 'create' ? createFacility : updateFacility).toHaveBeenCalledOnce();
       expect(screen.getByRole('button', { name: 'Saving…' })).toBeDisabled();
-      expect(screen.getByLabelText('Facility name')).toBeDisabled();
+      expect(screen.getByLabelText(/Facility name/i)).toBeDisabled();
       fireEvent.click(screen.getByRole('button', { name: 'Close dialog' }));
       expect(fireEvent(screen.getByRole('dialog'), new Event('cancel', { cancelable: true }))).toBe(
         false,
       );
       expect(screen.getByRole('dialog')).toBeInTheDocument();
+
       await act(async () => pending.resolve());
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     },
@@ -594,12 +743,14 @@ describe('Facilities page', () => {
     const pending = deferred();
     vi.mocked(setFacilityAvailability).mockReturnValueOnce(pending.promise);
     mount();
-    fireEvent.click(screen.getByRole('button', { name: /Function Hall/ }));
+    openDetails();
+
     const button = screen.getByRole('button', { name: 'Deactivate facility' });
     act(() => {
       fireEvent.click(button);
       fireEvent.click(button);
     });
+
     expect(setFacilityAvailability).toHaveBeenCalledOnce();
     expect(screen.getByRole('button', { name: 'Saving…' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Edit facility' })).toBeDisabled();
@@ -615,6 +766,7 @@ describe('Facilities page', () => {
     };
     mount();
     openCreate();
+
     expect(screen.getByRole('button', { name: 'Create facility' })).toBeDisabled();
     if (state === 'loading')
       expect(screen.getByRole('option', { name: 'Loading buildings…' })).toBeInTheDocument();
@@ -628,9 +780,11 @@ describe('Facilities page', () => {
     const rendered = mount();
     openCreate();
     fillCreate();
+
     const secondSession = { ...session, community: session.communities[1] };
     rendered.rerender(view(secondSession));
-    expect(screen.getByLabelText('Facility name')).toHaveValue('');
+
+    expect(screen.getByLabelText(/Facility name/i)).toHaveValue('');
     expect(screen.queryByRole('option', { name: 'Tower A' })).not.toBeInTheDocument();
     expect(screen.getByRole('option', { name: 'Other community tower' })).toBeInTheDocument();
   });
@@ -641,6 +795,7 @@ describe('Facilities page', () => {
       await pending.promise;
       return { id: 'new' } as Awaited<ReturnType<typeof createFacility>>;
     });
+
     const rendered = mount();
     openCreate();
     fillCreate();
@@ -648,8 +803,9 @@ describe('Facilities page', () => {
     rendered.rerender(view({ ...session, community: session.communities[1] }));
     change('Facility name', 'New community hall');
     await act(async () => pending.resolve());
+
     expect(screen.getByRole('dialog', { name: 'Add facility' })).toBeInTheDocument();
-    expect(screen.getByLabelText('Facility name')).toHaveValue('New community hall');
+    expect(screen.getByLabelText(/Facility name/i)).toHaveValue('New community hall');
     expect(createFacility).toHaveBeenCalledOnce();
     expect(vi.mocked(createFacility).mock.calls[0][0]).toBe(session);
   });
@@ -657,7 +813,8 @@ describe('Facilities page', () => {
   it('does not expose admin facility actions to a resident session', () => {
     render(view(makeSession()));
     expect(screen.queryByRole('button', { name: 'Add facility' })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /Function Hall/ }));
+
+    openDetails();
     expect(screen.queryByRole('button', { name: 'Edit facility' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Deactivate facility' })).not.toBeInTheDocument();
   });

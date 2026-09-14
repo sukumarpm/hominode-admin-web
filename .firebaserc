@@ -1,0 +1,14 @@
+{
+  "projects": {
+    "default": "hominode-prod"
+  },
+  "targets": {
+    "hominode-prod": {
+      "hosting": {
+        "hominode_app": [
+          "hominode-app-prod"
+        ]
+      }
+    }
+  }
+}

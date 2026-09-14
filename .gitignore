@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env*
+!.env.example
+playwright-report/
+test-results/
+.firebase/
+
+# macOS
+.DS_Store

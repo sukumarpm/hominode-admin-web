@@ -6,7 +6,7 @@ import { getFunctions, httpsCallable } from 'firebase/functions';
 import { getStorage } from 'firebase/storage';
 export function firebaseConfig(env: Record<string, string | undefined>) {
   return {
-    apiKey: env.VITE_FIREBASE_API_KEY || 'AIzaSyD50Xmkm1pNNhtBaXTd6yKPEeUEeEn1PjE',
+    apiKey: env.VITE_FIREBASE_API_KEY,
     appId: env.VITE_FIREBASE_APP_ID || '1:551984029668:web:5845083359a375d90db1f1',
     projectId: 'hominode-prod',
     authDomain: 'hominode-prod.firebaseapp.com',

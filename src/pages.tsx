@@ -13,19 +13,21 @@ import {
   Search,
   ShieldCheck,
   Users,
-  WalletCards
+  WalletCards,
 } from 'lucide-react';
 import { useEffect, useState, type FormEvent } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
   createComplaint,
+  createEvent,
+  uploadEventImages,
   createVisitor,
   currentAuthority,
   publishNotice,
   receiptBlob,
   residentLifecycle,
   submitProof,
-  updateScoped
+  updateScoped,
 } from './actions';
 import { AdminCreateButtons, ResidentReview } from './AdminTools';
 import { BillingCreateModal } from './BillingCreateModal';
@@ -46,6 +48,8 @@ import {
   type Session,
 } from './models';
 import { useAuth } from './session';
+import { canUseFeature } from './subscription';
+import { useSubscription } from './subscriptionContext';
 export const labels: Record<Module, string> = {
   residents: 'Residents',
   buildings: 'Buildings',
@@ -159,7 +163,7 @@ function pageBase(s: Session) {
 function canCreate(s: Session, m: Module) {
   return (
     (s.role === 'resident' && ['visitors', 'complaints'].includes(m)) ||
-    (s.role === 'admin' && ['notices', 'billing', 'facilities'].includes(m))
+    (s.role === 'admin' && ['notices', 'billing', 'facilities', 'events'].includes(m))
   );
 }
 function moduleStatus(module: Module, data: Data) {
@@ -178,9 +182,10 @@ function facilityText(data: Data, keys: string[], fallback = 'Not specified') {
 function facilityTags(data: Data) {
   const raw = data.amenities ?? data.features ?? data.facilities;
   if (!Array.isArray(raw)) return [] as string[];
-  return raw.filter((value): value is string => typeof value === 'string' && !!value.trim()).slice(0, 5);
+  return raw
+    .filter((value): value is string => typeof value === 'string' && !!value.trim())
+    .slice(0, 5);
 }
-
 
 function facilityImageUrls(data: Data) {
   const urls: string[] = [];
@@ -206,7 +211,11 @@ function FacilityGallery({ data, title }: { data: Data; title: string }) {
     <section className="facility-detail-gallery" aria-label={`${title} photos`}>
       <div className="facility-detail-main-image">
         <img src={active} alt={`${title} photo ${Math.min(selected, images.length - 1) + 1}`} />
-        {images.length > 1 && <span>{Math.min(selected, images.length - 1) + 1} / {images.length}</span>}
+        {images.length > 1 && (
+          <span>
+            {Math.min(selected, images.length - 1) + 1} / {images.length}
+          </span>
+        )}
       </div>
       {images.length > 1 && (
         <div className="facility-detail-thumbnails">
@@ -239,7 +248,10 @@ function facilityScheduleSummary(data: Data) {
     const firstSlot = slots[0].trim();
     const lastSlot = slots[slots.length - 1].trim();
     const splitSlot = (value: string) =>
-      value.split(/\s*(?:–|—|-)\s*/).map((part) => part.trim()).filter(Boolean);
+      value
+        .split(/\s*(?:–|—|-)\s*/)
+        .map((part) => part.trim())
+        .filter(Boolean);
     const firstParts = splitSlot(firstSlot);
     const lastParts = splitSlot(lastSlot);
     if (firstParts.length >= 2 && lastParts.length >= 2) {
@@ -250,7 +262,9 @@ function facilityScheduleSummary(data: Data) {
   return {
     range: range || 'Schedule not set',
     slotCount: slots.length,
-    slotLabel: slots.length ? `${slots.length} booking slot${slots.length === 1 ? '' : 's'}` : 'Flexible / no fixed slots',
+    slotLabel: slots.length
+      ? `${slots.length} booking slot${slots.length === 1 ? '' : 's'}`
+      : 'Flexible / no fixed slots',
   };
 }
 function facilityFeeSummary(data: Data) {
@@ -289,6 +303,29 @@ function ScopedModule({
     [sortBy, setSortBy] = useState('name'),
     [page, setPage] = useState(0);
   const [params, setParams] = useSearchParams();
+  const { entitlement } = useSubscription();
+
+  // TEMP DEBUG: Events subscription / permission investigation
+  if (module === 'events') {
+    console.group('[Events Debug]');
+    console.log('module:', module);
+    console.log('session role:', s.role);
+    console.log('profile role:', s.profile?.role);
+    console.log('community:', s.community);
+    console.log('community id:', s.community?.id);
+    console.log('community name:', s.community?.name);
+    console.log('entitlement:', entitlement);
+    console.log('planId:', entitlement?.planId);
+    console.log('planName:', entitlement?.planName);
+    console.log('features:', entitlement?.features);
+    console.log('events feature:', entitlement?.features?.events);
+    console.log(
+      'canUseFeature(events):',
+      canUseFeature(entitlement, 'events')
+    );
+    console.groupEnd();
+  }
+  const bookingAllowed = canUseFeature(entitlement, 'facilityBooking');
   const resource = useRows(s, module, revision);
   const base = pageBase(s);
   const title = routeName === 'requests' ? 'Service Requests' : labels[module];
@@ -297,7 +334,11 @@ function ScopedModule({
     ['facilities', 'notices', 'events', 'community', 'buildings'].includes(module);
   const categories =
     module === 'facilities'
-      ? [...new Set(resource.rows.map((r) => str(r.data.type) || str(r.data.category)).filter(Boolean))]
+      ? [
+          ...new Set(
+            resource.rows.map((r) => str(r.data.type) || str(r.data.category)).filter(Boolean),
+          ),
+        ]
       : [];
   const rows = resource.rows
     .filter(
@@ -314,7 +355,8 @@ function ScopedModule({
     )
     .sort((a, b) => {
       if (module !== 'facilities') return 0;
-      if (sortBy === 'status') return moduleStatus(module, a.data).localeCompare(moduleStatus(module, b.data));
+      if (sortBy === 'status')
+        return moduleStatus(module, a.data).localeCompare(moduleStatus(module, b.data));
       return titleOf(a.data).localeCompare(titleOf(b.data));
     });
   const selected = resource.rows.find((r) => r.id === params.get('record'));
@@ -357,9 +399,9 @@ function ScopedModule({
               View units <ArrowRight size={16} />
             </Link>
           )}
-          {module === 'facilities' && (
+          {module === 'facilities' && bookingAllowed && (
             <Link className="outline-link" to={base + 'bookings'}>
-              My bookings <ArrowRight size={16} />
+              Bookings <ArrowRight size={16} />
             </Link>
           )}
           {canCreate(s, module) && (
@@ -373,7 +415,9 @@ function ScopedModule({
                     ? 'Create Bill'
                     : module === 'facilities'
                       ? 'Add facility'
-                      : 'New Request'}
+                      : module === 'events'
+                        ? 'Create Event'
+                        : 'New Request'}
             </button>
           )}
         </div>
@@ -382,26 +426,67 @@ function ScopedModule({
         <div className="facility-summary-grid">
           <div className="facility-summary-card total">
             <Building2 size={22} />
-            <div><strong>{resource.loading ? '…' : resource.rows.length}</strong><span>Total Facilities</span></div>
+            <div>
+              <strong>{resource.loading ? '…' : resource.rows.length}</strong>
+              <span>Total Facilities</span>
+            </div>
           </div>
           <div className="facility-summary-card active">
             <ShieldCheck size={22} />
-            <div><strong>{resource.loading ? '…' : resource.rows.filter((r) => moduleStatus(module, r.data) === 'Active').length}</strong><span>Active</span></div>
+            <div>
+              <strong>
+                {resource.loading
+                  ? '…'
+                  : resource.rows.filter((r) => moduleStatus(module, r.data) === 'Active').length}
+              </strong>
+              <span>Active</span>
+            </div>
           </div>
           <div className="facility-summary-card maintenance">
             <Clock3 size={22} />
-            <div><strong>{resource.loading ? '…' : resource.rows.filter((r) => moduleStatus(module, r.data) === 'Maintenance').length}</strong><span>Under Maintenance</span></div>
+            <div>
+              <strong>
+                {resource.loading
+                  ? '…'
+                  : resource.rows.filter((r) => moduleStatus(module, r.data) === 'Maintenance')
+                      .length}
+              </strong>
+              <span>Under Maintenance</span>
+            </div>
           </div>
           <div className="facility-summary-card inactive">
             <span className="pause-mark">Ⅱ</span>
-            <div><strong>{resource.loading ? '…' : resource.rows.filter((r) => moduleStatus(module, r.data) === 'Inactive').length}</strong><span>Inactive</span></div>
+            <div>
+              <strong>
+                {resource.loading
+                  ? '…'
+                  : resource.rows.filter((r) => moduleStatus(module, r.data) === 'Inactive').length}
+              </strong>
+              <span>Inactive</span>
+            </div>
           </div>
         </div>
       ) : (
         <div className="module-summary">
-          <span><strong>{resource.loading ? '…' : resource.error ? '—' : resource.rows.length}</strong> Total {title.toLowerCase()}</span>
-          <span><strong>{resource.loading ? '…' : resource.error ? '—' : resource.rows.filter((r) => ['pending', 'expected', 'open'].includes(status(r.data))).length}</strong> Awaiting action</span>
-          <span className="summary-note"><ShieldCheck size={18} /> {s.community?.name || 'Platform registry'}</span>
+          <span>
+            <strong>{resource.loading ? '…' : resource.error ? '—' : resource.rows.length}</strong>{' '}
+            Total {title.toLowerCase()}
+          </span>
+          <span>
+            <strong>
+              {resource.loading
+                ? '…'
+                : resource.error
+                  ? '—'
+                  : resource.rows.filter((r) =>
+                      ['pending', 'expected', 'open'].includes(status(r.data)),
+                    ).length}
+            </strong>{' '}
+            Awaiting action
+          </span>
+          <span className="summary-note">
+            <ShieldCheck size={18} /> {s.community?.name || 'Platform registry'}
+          </span>
         </div>
       )}
       <Card>
@@ -421,9 +506,19 @@ function ScopedModule({
           {module === 'facilities' && (
             <label className="facility-filter-select">
               <span className="sr-only">Filter by category</span>
-              <select value={categoryFilter} onChange={(e) => { setCategoryFilter(e.target.value); setPage(0); }}>
+              <select
+                value={categoryFilter}
+                onChange={(e) => {
+                  setCategoryFilter(e.target.value);
+                  setPage(0);
+                }}
+              >
                 <option value="all">All categories</option>
-                {categories.map((category) => <option key={category} value={category}>{category}</option>)}
+                {categories.map((category) => (
+                  <option key={category} value={category}>
+                    {category}
+                  </option>
+                ))}
               </select>
             </label>
           )}
@@ -470,28 +565,57 @@ function ScopedModule({
               {rows.slice(currentPage * 12, currentPage * 12 + 12).map((row) =>
                 module === 'facilities' ? (
                   <article className="facility-card facility-card-v2" key={row.id}>
-                    <div className="facility-image facility-image-v2" onClick={() => setParams({ record: row.id })}>
+                    <div
+                      className="facility-image facility-image-v2"
+                      onClick={() => setParams({ record: row.id })}
+                    >
                       {facilityImageUrls(row.data)[0] ? (
-                        <img loading="lazy" src={facilityImageUrls(row.data)[0]} alt={titleOf(row.data)} />
+                        <img
+                          loading="lazy"
+                          src={facilityImageUrls(row.data)[0]}
+                          alt={titleOf(row.data)}
+                        />
                       ) : (
-                        <div className="facility-image-placeholder"><Building2 size={52} /><span>Add facility photo</span></div>
+                        <div className="facility-image-placeholder">
+                          <Building2 size={52} />
+                          <span>Add facility photo</span>
+                        </div>
                       )}
                       {facilityImageUrls(row.data).length > 1 && (
-                        <span className="facility-image-count">1 / {facilityImageUrls(row.data).length}</span>
+                        <span className="facility-image-count">
+                          1 / {facilityImageUrls(row.data).length}
+                        </span>
                       )}
-                      <span className="facility-status-float"><Pill value={moduleStatus(module, row.data)} /></span>
+                      <span className="facility-status-float">
+                        <Pill value={moduleStatus(module, row.data)} />
+                      </span>
                     </div>
 
                     <div className="facility-card-content">
                       <div className="facility-heading-v2">
                         <div className="facility-title-row">
-                          <span className="record-icon"><Building2 size={20} /></span>
+                          <span className="record-icon">
+                            <Building2 size={20} />
+                          </span>
                           <div>
                             <h3>{titleOf(row.data)}</h3>
-                            <small>{[str(row.data.type) || str(row.data.category), str(row.data.location)].filter(Boolean).join(' · ') || 'Community facility'}</small>
+                            <small>
+                              {[
+                                str(row.data.type) || str(row.data.category),
+                                str(row.data.location),
+                              ]
+                                .filter(Boolean)
+                                .join(' · ') || 'Community facility'}
+                            </small>
                           </div>
                         </div>
-                        <p>{facilityText(row.data, ['description'], 'No description has been added yet.')}</p>
+                        <p>
+                          {facilityText(
+                            row.data,
+                            ['description'],
+                            'No description has been added yet.',
+                          )}
+                        </p>
                       </div>
 
                       {(() => {
@@ -500,51 +624,120 @@ function ScopedModule({
                           <div className="facility-info-grid">
                             <div className="facility-info-tile schedule">
                               <Clock3 size={19} />
-                              <span><small>Schedule</small><strong>{schedule.range}</strong><em>{schedule.slotLabel}</em></span>
+                              <span>
+                                <small>Schedule</small>
+                                <strong>{schedule.range}</strong>
+                                <em>{schedule.slotLabel}</em>
+                              </span>
                             </div>
                             <div className="facility-info-tile">
                               <Users size={19} />
-                              <span><small>Capacity</small><strong>{row.data.capacity != null ? String(row.data.capacity) + ' people' : 'Not specified'}</strong></span>
+                              <span>
+                                <small>Capacity</small>
+                                <strong>
+                                  {row.data.capacity != null
+                                    ? String(row.data.capacity) + ' people'
+                                    : 'Not specified'}
+                                </strong>
+                              </span>
                             </div>
                             <div className="facility-info-tile">
                               <CalendarCheck2 size={19} />
-                              <span><small>Booking</small><strong>{facilityText(row.data, ['bookingType', 'bookingRule'], 'Advance booking required')}</strong></span>
+                              <span>
+                                <small>Booking</small>
+                                <strong>
+                                  {facilityText(
+                                    row.data,
+                                    ['bookingType', 'bookingRule'],
+                                    'Advance booking required',
+                                  )}
+                                </strong>
+                              </span>
                             </div>
-                            <div className={'facility-info-tile fee ' + (row.data.isFree === true ? 'free' : 'paid')}>
+                            <div
+                              className={
+                                'facility-info-tile fee ' +
+                                (row.data.isFree === true ? 'free' : 'paid')
+                              }
+                            >
                               <WalletCards size={19} />
-                              <span><small>Fee</small><strong>{facilityFeeSummary(row.data)}</strong></span>
+                              <span>
+                                <small>Fee</small>
+                                <strong>{facilityFeeSummary(row.data)}</strong>
+                              </span>
                             </div>
                           </div>
                         );
                       })()}
 
                       {!!facilityTags(row.data).length && (
-                        <div className="facility-tags facility-tags-v2">{facilityTags(row.data).map((tag) => <span key={tag}>{tag}</span>)}</div>
+                        <div className="facility-tags facility-tags-v2">
+                          {facilityTags(row.data).map((tag) => (
+                            <span key={tag}>{tag}</span>
+                          ))}
+                        </div>
                       )}
                     </div>
 
                     <div className="facility-card-actions">
-                      <Link to={base + 'bookings?facility=' + row.id}>View Bookings</Link>
+                      {bookingAllowed && (
+                        <Link to={base + 'bookings?facility=' + row.id}>View Bookings</Link>
+                      )}
                       {s.role === 'admin' ? (
-                        <button type="button" onClick={() => setParams({ record: row.id, edit: '1' })}><Pencil size={15} /> Edit Facility</button>
+                        <button
+                          type="button"
+                          onClick={() => setParams({ record: row.id, edit: '1' })}
+                        >
+                          <Pencil size={15} /> Edit Facility
+                        </button>
                       ) : (
-                        <button type="button" onClick={() => setParams({ record: row.id })}>View Details <ArrowRight size={15} /></button>
+                        <button type="button" onClick={() => setParams({ record: row.id })}>
+                          View Details <ArrowRight size={15} />
+                        </button>
                       )}
                     </div>
                   </article>
                 ) : (
-                  <button className="module-card" key={row.id} onClick={() => setParams({ record: row.id })}>
+                  <button
+                    className="module-card"
+                    key={row.id}
+                    onClick={() => setParams({ record: row.id })}
+                  >
                     <div className="module-card-body">
                       <div className="card-heading">
                         <span className="record-icon">
-                          {module === 'visitors' ? <span>{titleOf(row.data).slice(0, 2).toUpperCase()}</span> : module === 'bookings' ? <CalendarDays /> : <FileText />}
+                          {module === 'visitors' ? (
+                            <span>{titleOf(row.data).slice(0, 2).toUpperCase()}</span>
+                          ) : module === 'bookings' ? (
+                            <CalendarDays />
+                          ) : (
+                            <FileText />
+                          )}
                         </span>
                         <Pill value={moduleStatus(module, row.data)} />
                       </div>
                       <h3>{titleOf(row.data)}</h3>
-                      <p>{first(row.data, ['description', 'content', 'purpose', 'flatLabel', 'location', 'body', 'lastMessage'], 'View details')}</p>
-                      <small>{dateLabel(row.data.expectedArrival ?? row.data.date ?? row.data.createdAt)}</small>
-                      <span className="card-more">View details <ArrowRight size={16} /></span>
+                      <p>
+                        {first(
+                          row.data,
+                          [
+                            'description',
+                            'content',
+                            'purpose',
+                            'flatLabel',
+                            'location',
+                            'body',
+                            'lastMessage',
+                          ],
+                          'View details',
+                        )}
+                      </p>
+                      <small>
+                        {dateLabel(row.data.expectedArrival ?? row.data.date ?? row.data.createdAt)}
+                      </small>
+                      <span className="card-more">
+                        View details <ArrowRight size={16} />
+                      </span>
                     </div>
                   </button>
                 ),
@@ -588,10 +781,10 @@ function ScopedModule({
                         {['billing', 'payments'].includes(module)
                           ? money(amount(row.data))
                           : first(
-                            row.data,
-                            ['flatLabel', 'description', 'purpose', 'role', 'category'],
-                            '—',
-                          )}
+                              row.data,
+                              ['flatLabel', 'description', 'purpose', 'role', 'category'],
+                              '—',
+                            )}
                       </td>
                       <td>
                         <Pill value={moduleStatus(module, row.data)} />
@@ -648,16 +841,9 @@ function ScopedModule({
         (module === 'facilities' ? (
           <FacilityForm s={s} onClose={close} onSaved={facilitySaved} />
         ) : module === 'billing' ? (
-          <BillingCreateModal
-            s={s}
-            onClose={close}
-          />
+          <BillingCreateModal s={s} onClose={close} />
         ) : (
-          <CreateForm
-            s={s}
-            module={module}
-            onClose={close}
-          />
+          <CreateForm s={s} module={module} onClose={close} />
         ))}
     </>
   );
@@ -665,15 +851,47 @@ function ScopedModule({
 function CreateForm({ s, module, onClose }: { s: Session; module: Module; onClose: () => void }) {
   const [busy, setBusy] = useState(false),
     [error, setError] = useState('');
+
+  const [eventImageFiles, setEventImageFiles] = useState<File[]>([]);
+  const [eventImagePreviews, setEventImagePreviews] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (module !== 'events') return;
+
+    const urls = eventImageFiles.map((file) => URL.createObjectURL(file));
+    setEventImagePreviews(urls);
+
+    return () => {
+      urls.forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, [eventImageFiles, module]);
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setBusy(true);
     setError('');
-    const data = Object.fromEntries(new FormData(e.currentTarget)) as Record<string, string>;
+    const form = new FormData(e.currentTarget);
+    const eventImages = module === 'events' ? eventImageFiles : [];
+
+    const data = Object.fromEntries(form) as Record<string, string>;
     try {
       if (module === 'visitors') await createVisitor(s, data);
       else if (module === 'complaints') await createComplaint(s, data);
       else if (module === 'notices') await publishNotice(s, data);
+      else if (module === 'events') {
+        const eventRef = await createEvent(s, {
+          title: data.title,
+          category: data.category,
+          description: data.description,
+          eventDate: data.eventDate,
+          time: data.time,
+          location: data.location,
+          totalCapacity: data.totalCapacity ? Number(data.totalCapacity) : undefined,
+        });
+
+        if (eventImages.length) {
+          await uploadEventImages(s, eventRef.id, eventImages);
+        }
+      }
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Unable to save.');
@@ -688,7 +906,9 @@ function CreateForm({ s, module, onClose }: { s: Session; module: Module; onClos
           ? 'Invite a Visitor'
           : module === 'notices'
             ? 'Publish a Notice'
-            : 'Raise a Request'
+            : module === 'events'
+              ? 'Create Event'
+              : 'Raise a Request'
       }
       onClose={onClose}
     >
@@ -708,11 +928,7 @@ function CreateForm({ s, module, onClose }: { s: Session; module: Module; onClos
                 Expected arrival
                 <input type="datetime-local" name="expectedArrival" required />
               </label>
-              <PhoneNumberInput
-                name="phoneNumber"
-                label="Phone number"
-                defaultCountry="PH"
-              />
+              <PhoneNumberInput name="phoneNumber" label="Phone number" defaultCountry="PH" />
               <label>
                 Vehicle number
                 <input name="vehicleNumber" />
@@ -735,6 +951,157 @@ function CreateForm({ s, module, onClose }: { s: Session; module: Module; onClos
                   </select>
                 </label>
               )}
+              {module === 'events' && (
+                <>
+                  <label>
+                    Category
+                    <input
+                      name="category"
+                      placeholder="Festival, Meeting, Sports..."
+                      maxLength={100}
+                    />
+                  </label>
+
+                  <label>
+                    Date
+                    <input type="date" name="eventDate" required />
+                  </label>
+
+                  <label>
+                    Time
+                    <input type="time" name="time" />
+                  </label>
+
+                  <label>
+                    Location
+                    <input
+                      name="location"
+                      placeholder="Community Hall"
+                      maxLength={200}
+                      required
+                    />
+                  </label>
+
+                  <label>
+                    Capacity
+                    <input
+                      type="number"
+                      name="totalCapacity"
+                      min="1"
+                      step="1"
+                      placeholder="e.g. 250"
+                    />
+                  </label>
+
+                  <div className="event-image-field">
+                    <div className="event-image-heading">
+                      <div>
+                        <strong>Event photos</strong>
+                        <span>Optional · Up to 6 photos · 5 MB each</span>
+                      </div>
+                      {eventImageFiles.length > 0 && (
+                        <span className="event-image-counter">
+                          {eventImageFiles.length}/6 selected
+                        </span>
+                      )}
+                    </div>
+
+                    <label className="event-image-picker">
+                      <input
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp"
+                        multiple
+                        onChange={(e) => {
+                          const selected = Array.from(e.target.files ?? []);
+
+                          setEventImageFiles((current) => {
+                            const merged = [...current];
+
+                            for (const file of selected) {
+                              const duplicate = merged.some(
+                                (existing) =>
+                                  existing.name === file.name &&
+                                  existing.size === file.size &&
+                                  existing.lastModified === file.lastModified,
+                              );
+
+                              if (!duplicate) {
+                                merged.push(file);
+                              }
+                            }
+
+                            if (merged.length > 6) {
+                              setError('You can upload a maximum of 6 event photos.');
+                              return merged.slice(0, 6);
+                            }
+
+                            setError('');
+                            return merged;
+                          });
+
+                          e.target.value = '';
+                        }}
+                      />
+
+                      <span className="event-image-picker-icon">＋</span>
+
+                      <span className="event-image-picker-copy">
+                        <strong>
+                          {eventImageFiles.length
+                            ? 'Choose different photos'
+                            : 'Add event photos'}
+                        </strong>
+                        <small>
+                          Select JPG, PNG or WebP images
+                        </small>
+                      </span>
+
+                      <span className="event-image-picker-action">
+                        Browse
+                      </span>
+                    </label>
+
+                    {eventImageFiles.length > 0 && (
+                      <div className="event-image-previews">
+                        {eventImageFiles.map((file, index) => (
+                          <div
+                            className="event-image-preview"
+                            key={`${file.name}-${file.size}-${file.lastModified}`}
+                          >
+                            <img
+                              src={eventImagePreviews[index]}
+                              alt={`Event preview ${index + 1}`}
+                            />
+
+                            {index === 0 && (
+                              <span className="event-cover-badge">
+                                Cover
+                              </span>
+                            )}
+
+                            <button
+                              type="button"
+                              aria-label={`Remove ${file.name}`}
+                              onClick={() =>
+                                setEventImageFiles((current) =>
+                                  current.filter((_, i) => i !== index),
+                                )
+                              }
+                            >
+                              ×
+                            </button>
+
+                            <small title={file.name}>
+                              {file.name}
+                            </small>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+
               <label>
                 {module === 'notices' ? 'Announcement' : 'Description'}
                 <textarea
@@ -752,7 +1119,13 @@ function CreateForm({ s, module, onClose }: { s: Session; module: Module; onClos
             </p>
           )}
           <button className="primary" type="submit">
-            {busy ? 'Saving…' : module === 'notices' ? 'Publish to community' : 'Submit'}
+            {busy
+              ? 'Saving…'
+              : module === 'notices'
+                ? 'Publish to community'
+                : module === 'events'
+                  ? 'Create Event'
+                  : 'Submit'}
           </button>
         </fieldset>
       </form>
@@ -815,7 +1188,9 @@ function RecordDetails({
     );
   return (
     <Modal title={titleOf(d)} onClose={onClose}>
-      {module === 'facilities' && <FacilityGallery data={d} title={titleOf(d)} />}
+      {(module === 'facilities' || module === 'events') && (
+        <FacilityGallery data={d} title={titleOf(d)} />
+      )}
       <Pill value={moduleStatus(module, d)} />
       <DetailFields
         data={module === 'facilities' ? { ...d, status: undefined, pricePerDay: undefined } : d}
@@ -974,8 +1349,8 @@ function RecordDetails({
 
                   const confirmed = window.confirm(
                     `Release reservation for ${residentName}?\n\n` +
-                    `${str(d.flatLabel) || 'This unit'} will become vacant. ` +
-                    `The resident onboarding will remain available for assignment to another unit.`,
+                      `${str(d.flatLabel) || 'This unit'} will become vacant. ` +
+                      `The resident onboarding will remain available for assignment to another unit.`,
                   );
 
                   if (!confirmed) return;

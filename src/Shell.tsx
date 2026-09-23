@@ -5,6 +5,8 @@ import { useAuth } from './session';
 import { adminNav, residentNav, platformNav, type Navigation } from './navigation';
 import { useRows } from './data';
 import { type Session } from './models';
+import { canUseFeature } from './subscription';
+import { useSubscription } from './subscriptionContext';
 function InboxLink({ session, href }: { session: Session; href: string }) {
   const inbox = useRows(session, 'notifications');
   const unread = inbox.rows.filter((r) => r.data.isRead !== true).length;
@@ -37,7 +39,22 @@ function AuthenticatedShell({
 }) {
   const resident = s.role === 'resident';
   const base = resident ? '/' + s.community!.slug + '/' : '/';
-  const nav = resident ? residentNav : s.role === 'superAdmin' ? platformNav : adminNav;
+
+  const subscription =
+    s.role === 'admin' ? useSubscription() : { entitlement: null, loading: false, error: '' };
+
+  const rawNav = resident ? residentNav : s.role === 'superAdmin' ? platformNav : adminNav;
+
+  const nav =
+    s.role !== 'admin'
+      ? rawNav
+      : rawNav.filter((item) => {
+          if (item.path === 'events') {
+            return canUseFeature(subscription.entitlement, 'events');
+          }
+
+          return true;
+        });
   const [open, setOpen] = useState(false),
     [collapsed, setCollapsed] = useState(false),
     [search, setSearch] = useState(''),

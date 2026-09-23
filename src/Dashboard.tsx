@@ -87,21 +87,21 @@ export function RecordList({
 function QuickActions({ base, resident }: { base: string; resident: boolean }) {
   const items: [string, string, LucideIcon][] = resident
     ? [
-      ['Invite Visitor', 'visitors?create=1', UserRound],
-      ['My Bookings', 'bookings', CalendarDays],
-      ['Raise Request', 'requests?create=1', Wrench],
-      ['File Complaint', 'complaints?create=1', TriangleAlert],
-      ['View Facilities', 'facilities', Building2],
-      ['My Payments', 'bills', WalletCards],
-    ]
+        ['Invite Visitor', 'visitors?create=1', UserRound],
+        ['My Bookings', 'bookings', CalendarDays],
+        ['Raise Request', 'requests?create=1', Wrench],
+        ['File Complaint', 'complaints?create=1', TriangleAlert],
+        ['View Facilities', 'facilities', Building2],
+        ['My Payments', 'bills', WalletCards],
+      ]
     : [
-      ['View Residents', 'residents', Users],
-      ['View Visitors', 'visitors', UserRound],
-      ['View Buildings', 'buildings', Building2],
-      ['Raise Notice', 'notices?create=1', Plus],
-      ['Review Tickets', 'complaints', Wrench],
-      ['View Reports', 'reports', ChartNoAxesCombined],
-    ];
+        ['View Residents', 'residents', Users],
+        ['View Visitors', 'visitors', UserRound],
+        ['View Buildings', 'buildings', Building2],
+        ['Raise Notice', 'notices?create=1', Plus],
+        ['Review Tickets', 'complaints', Wrench],
+        ['View Reports', 'reports', ChartNoAxesCombined],
+      ];
   return (
     <Card title="Quick Actions">
       <div className="quick-grid">
@@ -120,10 +120,7 @@ function QuickActions({ base, resident }: { base: string; resident: boolean }) {
 function Welcome({ s, resident }: { s: Session; resident?: boolean }) {
   return (
     <header
-      className={
-        'welcome ' +
-        (resident ? 'resident-hero' : s.role === 'admin' ? 'admin-hero' : '')
-      }
+      className={'welcome ' + (resident ? 'resident-hero' : s.role === 'admin' ? 'admin-hero' : '')}
     >
       <div>
         {resident && (
@@ -222,9 +219,7 @@ function AdminDashboard({ s }: { s: Session }) {
   const reservedEnd = vacantEnd + (reserved / totalUnits) * 100;
   const maintenanceEnd = reservedEnd + (maintenance / totalUnits) * 100;
 
-  const percent = units.rows.length
-    ? Math.round((occupied / units.rows.length) * 100)
-    : 0;
+  const percent = units.rows.length ? Math.round((occupied / units.rows.length) * 100) : 0;
   const activity: Resource = {
     rows: [...visitors.rows, ...complaints.rows].sort(
       (a, b) =>

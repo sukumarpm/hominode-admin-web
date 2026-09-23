@@ -1,4 +1,3 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import {
   Building2,
   CalendarClock,
@@ -11,6 +10,7 @@ import {
   Sparkles,
   Trash2,
 } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import {
   createFacility,
   deleteFacilityImage,
@@ -29,6 +29,8 @@ import {
   type Session,
   type UpdateFacilityInput,
 } from './models';
+import { canUseFeature } from './subscription';
+import { useSubscription } from './subscriptionContext';
 
 const facilityTypes = [
   'Gym',
@@ -59,14 +61,16 @@ type GalleryItem =
 function storedFacilityImages(row?: Row): FacilityImage[] {
   const raw = row?.data.images;
   if (!Array.isArray(raw)) return [];
-  return raw.flatMap((value) => {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
-    const candidate = value as Record<string, unknown>;
-    const url = str(candidate.url);
-    const storagePath = str(candidate.storagePath);
-    if (!url || !storagePath) return [];
-    return [{ url, storagePath, ...(str(candidate.name) ? { name: str(candidate.name) } : {}) }];
-  }).slice(0, FACILITY_IMAGE_LIMIT);
+  return raw
+    .flatMap((value) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+      const candidate = value as Record<string, unknown>;
+      const url = str(candidate.url);
+      const storagePath = str(candidate.storagePath);
+      if (!url || !storagePath) return [];
+      return [{ url, storagePath, ...(str(candidate.name) ? { name: str(candidate.name) } : {}) }];
+    })
+    .slice(0, FACILITY_IMAGE_LIMIT);
 }
 
 function toMinutes(value: string) {
@@ -152,10 +156,8 @@ function initialValues(row?: Row) {
     pricingMode,
     isFree: pricingMode === 'free',
     price: typeof data.pricePerDay === 'number' ? String(data.pricePerDay) : '',
-    ownerPrice:
-      typeof data.ownerPricePerDay === 'number' ? String(data.ownerPricePerDay) : '',
-    tenantPrice:
-      typeof data.tenantPricePerDay === 'number' ? String(data.tenantPricePerDay) : '',
+    ownerPrice: typeof data.ownerPricePerDay === 'number' ? String(data.ownerPricePerDay) : '',
+    tenantPrice: typeof data.tenantPricePerDay === 'number' ? String(data.tenantPricePerDay) : '',
     isAvailable: row ? data.isAvailable !== false : true,
     timeSlots: Array.isArray(data.timeSlots)
       ? data.timeSlots.filter((slot): slot is string => typeof slot === 'string').map(str)
@@ -210,6 +212,8 @@ export function FacilityForm({
   const mounted = useRef(true);
   const container = useRef<HTMLDivElement>(null);
   const buildings = useRows(s, 'buildings');
+  const { entitlement } = useSubscription();
+  const bookingAllowed = canUseFeature(entitlement, 'facilityBooking');
 
   useEffect(() => {
     mounted.current = true;
@@ -251,7 +255,10 @@ export function FacilityForm({
     }
 
     const invalid = incoming.find(
-      (file) => !['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size <= 0 || file.size > 5 * 1024 * 1024,
+      (file) =>
+        !['image/jpeg', 'image/png', 'image/webp'].includes(file.type) ||
+        file.size <= 0 ||
+        file.size > 5 * 1024 * 1024,
     );
     if (invalid) {
       setError('Choose JPG, PNG or WebP images no larger than 5 MB each.');
@@ -317,10 +324,7 @@ export function FacilityForm({
   }
 
   function addEmptySlot() {
-    setSlots((current) => [
-      ...current,
-      { id: nextSlot.current++, start: '', end: '' },
-    ]);
+    setSlots((current) => [...current, { id: nextSlot.current++, start: '', end: '' }]);
   }
 
   function generateSlots() {
@@ -373,24 +377,31 @@ export function FacilityForm({
         }
       }
 
-      if (slots.some((slot) => slot.raw === undefined && (!slot.start || !slot.end))) {
-        throw Error('Complete the start and end time for every booking slot, or remove the empty slot.');
-      }
-
-      for (const slot of slots) {
-        if (slot.raw !== undefined) {
-          if (!slot.raw.trim()) throw Error('Enter a value for every legacy slot, or remove it.');
-          continue;
+      if (bookingAllowed) {
+        if (slots.some((slot) => slot.raw === undefined && (!slot.start || !slot.end))) {
+          throw Error(
+            'Complete the start and end time for every booking slot, or remove the empty slot.',
+          );
         }
-        const start = toMinutes(slot.start);
-        const end = toMinutes(slot.end);
-        if (start == null || end == null || end <= start)
-          throw Error('Each booking slot must end after it starts.');
-      }
 
-      const timeSlots = slotStrings.map((slot) => slot.trim());
-      if (!row || JSON.stringify(timeSlots) !== JSON.stringify(initial.timeSlots)) {
-        fields.timeSlots = timeSlots;
+        for (const slot of slots) {
+          if (slot.raw !== undefined) {
+            if (!slot.raw.trim()) throw Error('Enter a value for every legacy slot, or remove it.');
+            continue;
+          }
+
+          const start = toMinutes(slot.start);
+          const end = toMinutes(slot.end);
+
+          if (start == null || end == null || end <= start)
+            throw Error('Each booking slot must end after it starts.');
+        }
+
+        const timeSlots = slotStrings.map((slot) => slot.trim());
+
+        if (!row || JSON.stringify(timeSlots) !== JSON.stringify(initial.timeSlots)) {
+          fields.timeSlots = timeSlots;
+        }
       }
 
       const pricingChanged =
@@ -449,11 +460,18 @@ export function FacilityForm({
           ? await uploadFacilityImages(
               s,
               row.id,
-              gallery.filter((item): item is Extract<GalleryItem, { kind: 'new' }> => item.kind === 'new').map((item) => item.file),
+              gallery
+                .filter(
+                  (item): item is Extract<GalleryItem, { kind: 'new' }> => item.kind === 'new',
+                )
+                .map((item) => item.file),
             )
           : [];
         const removedStored = initialStoredImages.filter(
-          (image) => !gallery.some((item) => item.kind === 'stored' && item.image.storagePath === image.storagePath),
+          (image) =>
+            !gallery.some(
+              (item) => item.kind === 'stored' && item.image.storagePath === image.storagePath,
+            ),
         );
         const finalImages: FacilityImage[] = [];
         let uploadedIndex = 0;
@@ -469,14 +487,16 @@ export function FacilityForm({
           await Promise.allSettled(uploaded.map((image) => deleteFacilityImage(s, row.id, image)));
           throw error;
         }
-        await Promise.allSettled(removedStored.map((image) => deleteFacilityImage(s, row.id, image)));
+        await Promise.allSettled(
+          removedStored.map((image) => deleteFacilityImage(s, row.id, image)),
+        );
       } else {
         const created = await createFacility(s, {
           name: fields.name!,
           type: fields.type!,
           description: fields.description,
           iconName: fields.iconName,
-          timeSlots: fields.timeSlots!,
+          ...(bookingAllowed && fields.timeSlots ? { timeSlots: fields.timeSlots } : {}),
           isFree: fields.isFree!,
           pricingMode: fields.pricingMode!,
           pricePerDay: fields.pricePerDay!,
@@ -494,7 +514,9 @@ export function FacilityForm({
           const uploaded = await uploadFacilityImages(
             s,
             created.id,
-            gallery.filter((item): item is Extract<GalleryItem, { kind: 'new' }> => item.kind === 'new').map((item) => item.file),
+            gallery
+              .filter((item): item is Extract<GalleryItem, { kind: 'new' }> => item.kind === 'new')
+              .map((item) => item.file),
           );
           await updateFacility(s, created.id, { images: uploaded });
         }
@@ -527,11 +549,14 @@ export function FacilityForm({
                 <span className="facility-form-kicker">FACILITY MANAGEMENT</span>
                 <h2>{row ? 'Update facility details' : 'Create a new facility'}</h2>
                 <p>
-                  Configure facility information, booking slots, pricing and availability from one
-                  screen.
+                  {bookingAllowed
+                    ? 'Configure facility information, booking slots, pricing and availability from one screen.'
+                    : 'Configure facility information, pricing and availability from one screen.'}
                 </p>
               </div>
-              <span className={`facility-availability-chip ${values.isAvailable ? 'active' : 'inactive'}`}>
+              <span
+                className={`facility-availability-chip ${values.isAvailable ? 'active' : 'inactive'}`}
+              >
                 <span /> {values.isAvailable ? 'Active' : 'Inactive'}
               </span>
             </div>
@@ -540,7 +565,9 @@ export function FacilityForm({
               <div className="facility-form-main">
                 <section className="facility-form-section">
                   <div className="facility-section-heading">
-                    <span className="facility-section-icon"><Info size={18} /></span>
+                    <span className="facility-section-icon">
+                      <Info size={18} />
+                    </span>
                     <div>
                       <h3>Basic information</h3>
                       <p>The details residents will see on the facility card.</p>
@@ -571,7 +598,9 @@ export function FacilityForm({
                       >
                         <option value="">Select facility type</option>
                         {facilityTypes.map((type) => (
-                          <option key={type} value={type}>{type}</option>
+                          <option key={type} value={type}>
+                            {type}
+                          </option>
                         ))}
                         <option value="Other">Other</option>
                       </select>
@@ -607,7 +636,9 @@ export function FacilityForm({
 
                 <section className="facility-form-section">
                   <div className="facility-section-heading">
-                    <span className="facility-section-icon"><Building2 size={18} /></span>
+                    <span className="facility-section-icon">
+                      <Building2 size={18} />
+                    </span>
                     <div>
                       <h3>Location & media</h3>
                       <p>Choose the building and add visual information for the facility.</p>
@@ -618,7 +649,9 @@ export function FacilityForm({
                     {row ? (
                       <div className="facility-readonly-field">
                         <span>Building</span>
-                        <strong>{first(row.data, ['buildingName', 'buildingId'], 'Unspecified')}</strong>
+                        <strong>
+                          {first(row.data, ['buildingName', 'buildingId'], 'Unspecified')}
+                        </strong>
                         <small>Building cannot be changed while editing.</small>
                       </div>
                     ) : (
@@ -634,7 +667,9 @@ export function FacilityForm({
                             {buildings.loading ? 'Loading buildings…' : 'Select building'}
                           </option>
                           {buildingOptions.map((building) => (
-                            <option key={building.id} value={building.id}>{building.name}</option>
+                            <option key={building.id} value={building.id}>
+                              {building.name}
+                            </option>
                           ))}
                         </select>
                       </label>
@@ -654,9 +689,14 @@ export function FacilityForm({
                     <div className="facility-image-manager-head">
                       <div>
                         <span>Facility photos</span>
-                        <small>Upload up to 6 JPG, PNG or WebP images. The first photo is used as the primary image.</small>
+                        <small>
+                          Upload up to 6 JPG, PNG or WebP images. The first photo is used as the
+                          primary image.
+                        </small>
                       </div>
-                      <span className="facility-image-limit">{gallery.length}/{FACILITY_IMAGE_LIMIT}</span>
+                      <span className="facility-image-limit">
+                        {gallery.length}/{FACILITY_IMAGE_LIMIT}
+                      </span>
                     </div>
 
                     <input
@@ -687,7 +727,10 @@ export function FacilityForm({
                         <img src={legacyImageUrl} alt="Existing facility" />
                         <div>
                           <strong>Existing primary image</strong>
-                          <small>This is a legacy image URL. Upload new photos to create a managed gallery.</small>
+                          <small>
+                            This is a legacy image URL. Upload new photos to create a managed
+                            gallery.
+                          </small>
                         </div>
                         <button
                           type="button"
@@ -695,20 +738,33 @@ export function FacilityForm({
                             setLegacyImageRemoved(true);
                             setGalleryTouched(true);
                           }}
-                        >Remove</button>
+                        >
+                          Remove
+                        </button>
                       </div>
                     )}
 
                     {!!gallery.length && (
                       <div className="facility-image-grid" aria-label="Selected facility photos">
                         {gallery.map((item, index) => (
-                          <div className={`facility-image-thumb ${index === 0 ? 'primary' : ''}`} key={item.id}>
-                            {item.previewUrl ? <img src={item.previewUrl} alt={`Facility photo ${index + 1}`} /> : <div className="facility-thumb-placeholder"><ImageIcon size={24} /></div>}
+                          <div
+                            className={`facility-image-thumb ${index === 0 ? 'primary' : ''}`}
+                            key={item.id}
+                          >
+                            {item.previewUrl ? (
+                              <img src={item.previewUrl} alt={`Facility photo ${index + 1}`} />
+                            ) : (
+                              <div className="facility-thumb-placeholder">
+                                <ImageIcon size={24} />
+                              </div>
+                            )}
                             <span className="facility-thumb-number">{index + 1}</span>
                             {index === 0 && <span className="facility-primary-badge">Primary</span>}
                             <div className="facility-thumb-actions">
                               {index > 0 && (
-                                <button type="button" onClick={() => makePrimary(item.id)}>Set primary</button>
+                                <button type="button" onClick={() => makePrimary(item.id)}>
+                                  Set primary
+                                </button>
                               )}
                               <button
                                 type="button"
@@ -736,138 +792,171 @@ export function FacilityForm({
                   )}
                 </section>
 
-                <section className="facility-form-section facility-slot-section">
-                  <div className="facility-section-heading slot-heading">
-                    <span className="facility-section-icon"><CalendarClock size={18} /></span>
-                    <div>
-                      <h3>Booking slots</h3>
-                      <p>Create slots automatically or fine-tune individual booking periods.</p>
-                    </div>
-                    <span className="facility-slot-count">{slots.length} slot{slots.length === 1 ? '' : 's'}</span>
-                  </div>
-
-                  <div className="slot-generator">
-                    <div className="slot-generator-title">
-                      <Sparkles size={17} />
+                {bookingAllowed && (
+                  <section className="facility-form-section facility-slot-section">
+                    <div className="facility-section-heading slot-heading">
+                      <span className="facility-section-icon">
+                        <CalendarClock size={18} />
+                      </span>
                       <div>
-                        <strong>Quick generate</strong>
-                        <small>Build the full day schedule in one click.</small>
+                        <h3>Booking slots</h3>
+                        <p>Create slots automatically or fine-tune individual booking periods.</p>
                       </div>
+                      <span className="facility-slot-count">
+                        {slots.length} slot{slots.length === 1 ? '' : 's'}
+                      </span>
                     </div>
-                    <div className="slot-generator-fields">
-                      <label>
-                        <span>Opens</span>
-                        <input type="time" value={generatorStart} onChange={(e) => setGeneratorStart(e.target.value)} />
-                      </label>
-                      <label>
-                        <span>Closes</span>
-                        <input type="time" value={generatorEnd} onChange={(e) => setGeneratorEnd(e.target.value)} />
-                      </label>
-                      <label>
-                        <span>Slot duration</span>
-                        <select value={generatorDuration} onChange={(e) => setGeneratorDuration(e.target.value)}>
-                          <option value="30">30 minutes</option>
-                          <option value="45">45 minutes</option>
-                          <option value="60">1 hour</option>
-                          <option value="90">1.5 hours</option>
-                          <option value="120">2 hours</option>
-                        </select>
-                      </label>
-                      <button type="button" className="facility-generate-button" onClick={generateSlots}>
-                        Generate slots
-                      </button>
-                    </div>
-                  </div>
 
-                  <div className="facility-slots-list">
-                    {!slots.length ? (
-                      <div className="facility-slots-empty">
-                        <Clock3 size={28} />
-                        <strong>No booking slots yet</strong>
-                        <p>Use quick generate above, or add a custom slot manually.</p>
-                        <button type="button" onClick={addEmptySlot}><Plus size={16} /> Add first slot</button>
+                    <div className="slot-generator">
+                      <div className="slot-generator-title">
+                        <Sparkles size={17} />
+                        <div>
+                          <strong>Quick generate</strong>
+                          <small>Build the full day schedule in one click.</small>
+                        </div>
                       </div>
-                    ) : (
-                      slots.map((slot, index) => (
-                        <div className="facility-slot-row" key={slot.id}>
-                          <span className="facility-slot-number">{index + 1}</span>
-                          {slot.raw !== undefined ? (
-                            <label className="facility-legacy-slot">
-                              <span>Legacy slot</span>
-                              <input
-                                value={slot.raw}
-                                onChange={(e) =>
-                                  setSlots((current) =>
-                                    current.map((item) =>
-                                      item.id === slot.id ? { ...item, raw: e.target.value } : item,
-                                    ),
-                                  )
-                                }
-                              />
-                            </label>
-                          ) : (
-                            <>
-                              <label>
-                                <span>Start</span>
-                                <input
-                                  type="time"
-                                  required
-                                  value={slot.start}
-                                  onChange={(e) =>
-                                    setSlots((current) =>
-                                      current.map((item) =>
-                                        item.id === slot.id ? { ...item, start: e.target.value } : item,
-                                      ),
-                                    )
-                                  }
-                                />
-                              </label>
-                              <span className="facility-slot-arrow">→</span>
-                              <label>
-                                <span>End</span>
-                                <input
-                                  type="time"
-                                  required
-                                  value={slot.end}
-                                  onChange={(e) =>
-                                    setSlots((current) =>
-                                      current.map((item) =>
-                                        item.id === slot.id ? { ...item, end: e.target.value } : item,
-                                      ),
-                                    )
-                                  }
-                                />
-                              </label>
-                              <span className="facility-slot-preview">
-                                {slot.start && slot.end
-                                  ? `${time24ToDisplay(slot.start)} – ${time24ToDisplay(slot.end)}`
-                                  : 'Incomplete'}
-                              </span>
-                            </>
-                          )}
-                          <button
-                            type="button"
-                            className="facility-slot-remove"
-                            aria-label={`Remove time slot ${index + 1}`}
-                            onClick={() => setSlots((current) => current.filter((item) => item.id !== slot.id))}
+                      <div className="slot-generator-fields">
+                        <label>
+                          <span>Opens</span>
+                          <input
+                            type="time"
+                            value={generatorStart}
+                            onChange={(e) => setGeneratorStart(e.target.value)}
+                          />
+                        </label>
+                        <label>
+                          <span>Closes</span>
+                          <input
+                            type="time"
+                            value={generatorEnd}
+                            onChange={(e) => setGeneratorEnd(e.target.value)}
+                          />
+                        </label>
+                        <label>
+                          <span>Slot duration</span>
+                          <select
+                            value={generatorDuration}
+                            onChange={(e) => setGeneratorDuration(e.target.value)}
                           >
-                            <Trash2 size={16} />
+                            <option value="30">30 minutes</option>
+                            <option value="45">45 minutes</option>
+                            <option value="60">1 hour</option>
+                            <option value="90">1.5 hours</option>
+                            <option value="120">2 hours</option>
+                          </select>
+                        </label>
+                        <button
+                          type="button"
+                          className="facility-generate-button"
+                          onClick={generateSlots}
+                        >
+                          Generate slots
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="facility-slots-list">
+                      {!slots.length ? (
+                        <div className="facility-slots-empty">
+                          <Clock3 size={28} />
+                          <strong>No booking slots yet</strong>
+                          <p>Use quick generate above, or add a custom slot manually.</p>
+                          <button type="button" onClick={addEmptySlot}>
+                            <Plus size={16} /> Add first slot
                           </button>
                         </div>
-                      ))
-                    )}
-                  </div>
+                      ) : (
+                        slots.map((slot, index) => (
+                          <div className="facility-slot-row" key={slot.id}>
+                            <span className="facility-slot-number">{index + 1}</span>
+                            {slot.raw !== undefined ? (
+                              <label className="facility-legacy-slot">
+                                <span>Legacy slot</span>
+                                <input
+                                  value={slot.raw}
+                                  onChange={(e) =>
+                                    setSlots((current) =>
+                                      current.map((item) =>
+                                        item.id === slot.id
+                                          ? { ...item, raw: e.target.value }
+                                          : item,
+                                      ),
+                                    )
+                                  }
+                                />
+                              </label>
+                            ) : (
+                              <>
+                                <label>
+                                  <span>Start</span>
+                                  <input
+                                    type="time"
+                                    required
+                                    value={slot.start}
+                                    onChange={(e) =>
+                                      setSlots((current) =>
+                                        current.map((item) =>
+                                          item.id === slot.id
+                                            ? { ...item, start: e.target.value }
+                                            : item,
+                                        ),
+                                      )
+                                    }
+                                  />
+                                </label>
+                                <span className="facility-slot-arrow">→</span>
+                                <label>
+                                  <span>End</span>
+                                  <input
+                                    type="time"
+                                    required
+                                    value={slot.end}
+                                    onChange={(e) =>
+                                      setSlots((current) =>
+                                        current.map((item) =>
+                                          item.id === slot.id
+                                            ? { ...item, end: e.target.value }
+                                            : item,
+                                        ),
+                                      )
+                                    }
+                                  />
+                                </label>
+                                <span className="facility-slot-preview">
+                                  {slot.start && slot.end
+                                    ? `${time24ToDisplay(slot.start)} – ${time24ToDisplay(slot.end)}`
+                                    : 'Incomplete'}
+                                </span>
+                              </>
+                            )}
+                            <button
+                              type="button"
+                              className="facility-slot-remove"
+                              aria-label={`Remove time slot ${index + 1}`}
+                              onClick={() =>
+                                setSlots((current) => current.filter((item) => item.id !== slot.id))
+                              }
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
+                        ))
+                      )}
+                    </div>
 
-                  {!!slots.length && (
-                    <button type="button" className="facility-add-slot" onClick={addEmptySlot}>
-                      <Plus size={16} /> Add custom slot
-                    </button>
-                  )}
-                </section>
+                    {!!slots.length && (
+                      <button type="button" className="facility-add-slot" onClick={addEmptySlot}>
+                        <Plus size={16} /> Add custom slot
+                      </button>
+                    )}
+                  </section>
+                )}
 
                 <section className="facility-form-section">
                   <div className="facility-section-heading">
-                    <span className="facility-section-icon"><CircleDollarSign size={18} /></span>
+                    <span className="facility-section-icon">
+                      <CircleDollarSign size={18} />
+                    </span>
                     <div>
                       <h3>Pricing & availability</h3>
                       <p>Make the cost clear before residents request a booking.</p>
@@ -880,7 +969,9 @@ export function FacilityForm({
                       className={`facility-choice-card ${values.pricingMode === 'free' ? 'selected' : ''}`}
                       onClick={() => setValues({ ...values, pricingMode: 'free', isFree: true })}
                     >
-                      <span className="facility-choice-check"><Check size={15} /></span>
+                      <span className="facility-choice-check">
+                        <Check size={15} />
+                      </span>
                       <strong>Free facility</strong>
                       <small>No booking fee is charged.</small>
                     </button>
@@ -890,12 +981,15 @@ export function FacilityForm({
                       onClick={() =>
                         setValues({
                           ...values,
-                          pricingMode: values.pricingMode === 'resident_type' ? 'resident_type' : 'flat',
+                          pricingMode:
+                            values.pricingMode === 'resident_type' ? 'resident_type' : 'flat',
                           isFree: false,
                         })
                       }
                     >
-                      <span className="facility-choice-check"><Check size={15} /></span>
+                      <span className="facility-choice-check">
+                        <Check size={15} />
+                      </span>
                       <strong>Paid facility</strong>
                       <small>Residents must pay a booking fee.</small>
                     </button>
@@ -908,7 +1002,9 @@ export function FacilityForm({
                         <button
                           type="button"
                           className={values.pricingMode === 'flat' ? 'active' : ''}
-                          onClick={() => setValues({ ...values, pricingMode: 'flat', isFree: false })}
+                          onClick={() =>
+                            setValues({ ...values, pricingMode: 'flat', isFree: false })
+                          }
                         >
                           Same fee for everyone
                         </button>
@@ -926,7 +1022,17 @@ export function FacilityForm({
                       {values.pricingMode === 'flat' && (
                         <label className="facility-money-field">
                           <span>Fee per day *</span>
-                          <div><b>₱</b><input type="number" min="0" step="any" required value={values.price} onChange={(e) => setValues({ ...values, price: e.target.value })} /></div>
+                          <div>
+                            <b>₱</b>
+                            <input
+                              type="number"
+                              min="0"
+                              step="any"
+                              required
+                              value={values.price}
+                              onChange={(e) => setValues({ ...values, price: e.target.value })}
+                            />
+                          </div>
                         </label>
                       )}
 
@@ -934,11 +1040,35 @@ export function FacilityForm({
                         <div className="facility-field-grid two">
                           <label className="facility-money-field">
                             <span>Owner fee per day *</span>
-                            <div><b>₱</b><input type="number" min="0" step="any" required value={values.ownerPrice} onChange={(e) => setValues({ ...values, ownerPrice: e.target.value })} /></div>
+                            <div>
+                              <b>₱</b>
+                              <input
+                                type="number"
+                                min="0"
+                                step="any"
+                                required
+                                value={values.ownerPrice}
+                                onChange={(e) =>
+                                  setValues({ ...values, ownerPrice: e.target.value })
+                                }
+                              />
+                            </div>
                           </label>
                           <label className="facility-money-field">
                             <span>Tenant / Lease fee per day *</span>
-                            <div><b>₱</b><input type="number" min="0" step="any" required value={values.tenantPrice} onChange={(e) => setValues({ ...values, tenantPrice: e.target.value })} /></div>
+                            <div>
+                              <b>₱</b>
+                              <input
+                                type="number"
+                                min="0"
+                                step="any"
+                                required
+                                value={values.tenantPrice}
+                                onChange={(e) =>
+                                  setValues({ ...values, tenantPrice: e.target.value })
+                                }
+                              />
+                            </div>
                           </label>
                         </div>
                       )}
@@ -948,19 +1078,29 @@ export function FacilityForm({
                   <div className="facility-availability-control">
                     <div>
                       <strong>Facility availability</strong>
-                      <small>Inactive facilities remain in the admin list but cannot be booked.</small>
+                      <small>
+                        Inactive facilities remain in the admin list but cannot be booked.
+                      </small>
                     </div>
-                    <div className="facility-status-toggle" role="group" aria-label="Facility availability">
+                    <div
+                      className="facility-status-toggle"
+                      role="group"
+                      aria-label="Facility availability"
+                    >
                       <button
                         type="button"
                         className={values.isAvailable ? 'active' : ''}
                         onClick={() => setValues({ ...values, isAvailable: true })}
-                      >Active</button>
+                      >
+                        Active
+                      </button>
                       <button
                         type="button"
                         className={!values.isAvailable ? 'inactive active' : ''}
                         onClick={() => setValues({ ...values, isAvailable: false })}
-                      >Inactive</button>
+                      >
+                        Inactive
+                      </button>
                     </div>
                   </div>
                 </section>
@@ -974,41 +1114,77 @@ export function FacilityForm({
                       {primaryPreview ? (
                         <img src={primaryPreview} alt="" />
                       ) : (
-                        <div><ImageIcon size={31} /><span>Facility image</span></div>
+                        <div>
+                          <ImageIcon size={31} />
+                          <span>Facility image</span>
+                        </div>
                       )}
-                      {gallery.length > 1 && <span className="facility-preview-count">1 / {gallery.length}</span>}
-                      <span className={`facility-preview-status ${values.isAvailable ? 'active' : 'inactive'}`}>
+                      {gallery.length > 1 && (
+                        <span className="facility-preview-count">1 / {gallery.length}</span>
+                      )}
+                      <span
+                        className={`facility-preview-status ${values.isAvailable ? 'active' : 'inactive'}`}
+                      >
                         {values.isAvailable ? 'Active' : 'Inactive'}
                       </span>
                     </div>
                     <div className="facility-preview-body">
                       <small>{values.type || 'Facility type'}</small>
                       <h3>{values.name.trim() || 'Facility name'}</h3>
-                      <p>{values.description.trim() || 'Your facility description will appear here.'}</p>
+                      <p>
+                        {values.description.trim() || 'Your facility description will appear here.'}
+                      </p>
 
                       <dl>
-                        <div><dt>Building</dt><dd>{row ? first(row.data, ['buildingName', 'buildingId'], 'Unspecified') : buildingOptions.find((item) => item.id === buildingId)?.name || 'Not selected'}</dd></div>
-                        <div><dt>Booking slots</dt><dd>{slots.length ? `${slots.length} configured` : 'No slots'}</dd></div>
-                        <div><dt>Fee</dt><dd className={values.pricingMode === 'free' ? 'free' : 'paid'}>{previewPrice}</dd></div>
+                        <div>
+                          <dt>Building</dt>
+                          <dd>
+                            {row
+                              ? first(row.data, ['buildingName', 'buildingId'], 'Unspecified')
+                              : buildingOptions.find((item) => item.id === buildingId)?.name ||
+                                'Not selected'}
+                          </dd>
+                        </div>
+                        {bookingAllowed && (
+                          <div>
+                            <dt>Booking slots</dt>
+                            <dd>{slots.length ? `${slots.length} configured` : 'No slots'}</dd>
+                          </div>
+                        )}
+                        <div>
+                          <dt>Fee</dt>
+                          <dd className={values.pricingMode === 'free' ? 'free' : 'paid'}>
+                            {previewPrice}
+                          </dd>
+                        </div>
                       </dl>
                     </div>
                   </div>
                   <div className="facility-preview-tip">
                     <Info size={16} />
-                    Residents should be able to understand the facility, booking schedule and price without opening extra screens.
+                    Residents should be able to understand the facility details and pricing without
+                    opening extra screens.
                   </div>
                 </div>
               </aside>
             </div>
 
-            {error && <p role="alert" className="form-error facility-form-error">{error}</p>}
+            {error && (
+              <p role="alert" className="form-error facility-form-error">
+                {error}
+              </p>
+            )}
 
             <div className="facility-form-footer">
-              <button type="button" onClick={close}>Cancel</button>
+              <button type="button" onClick={close}>
+                Cancel
+              </button>
               <button
                 className="primary"
                 type="submit"
-                disabled={!row && (buildings.loading || !!buildings.error || !buildingOptions.length)}
+                disabled={
+                  !row && (buildings.loading || !!buildings.error || !buildingOptions.length)
+                }
               >
                 {busy ? 'Saving…' : row ? 'Save changes' : 'Create facility'}
               </button>
@@ -1064,7 +1240,9 @@ export function FacilityActions({
     <div className="detail-actions" aria-busy={busy}>
       <fieldset disabled={busy}>
         <div className="button-row">
-          <button className="primary" onClick={onEdit}>Edit facility</button>
+          <button className="primary" onClick={onEdit}>
+            Edit facility
+          </button>
           <button onClick={() => void toggle()}>
             {busy
               ? 'Saving…'
@@ -1074,7 +1252,11 @@ export function FacilityActions({
           </button>
         </div>
       </fieldset>
-      {error && <p role="alert" className="form-error">{error}</p>}
+      {error && (
+        <p role="alert" className="form-error">
+          {error}
+        </p>
+      )}
     </div>
   );
 }

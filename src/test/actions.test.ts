@@ -65,7 +65,9 @@ beforeEach(() => {
   };
   m.profile = { ...residentData };
   m.storageRef.mockImplementation((_storage: unknown, path: string) => path);
-  m.downloadUrl.mockImplementation(async (path: string) => `https://storage.example/${encodeURIComponent(path)}`);
+  m.downloadUrl.mockImplementation(
+    async (path: string) => `https://storage.example/${encodeURIComponent(path)}`,
+  );
   m.deleteObject.mockResolvedValue(undefined);
   m.get.mockImplementation(async (path: string) => ({
     data: () =>
@@ -569,7 +571,9 @@ describe('facility writes', () => {
     expect(result[0]).toMatchObject({ name: 'front.jpg' });
     expect(result[1]).toMatchObject({ name: 'inside.webp' });
     for (const image of result)
-      expect(image.storagePath).toMatch(/^facility_images\/community-1\/facility-1\/.+\.(jpg|webp)$/);
+      expect(image.storagePath).toMatch(
+        /^facility_images\/community-1\/facility-1\/.+\.(jpg|webp)$/,
+      );
     expect(result.every((image) => image.url.startsWith('https://storage.example/'))).toBe(true);
   });
 
@@ -631,8 +635,17 @@ describe('facility writes', () => {
     ['imageUrl', '/relative.jpg'],
     ['imageUrl', 'https:example.com'],
     ['images', 'not-an-array'],
-    ['images', new Array(7).fill({ url: 'https://example.com/a.jpg', storagePath: 'facility_images/community-1/facility-1/a.jpg' })],
-    ['images', [{ url: '/relative.jpg', storagePath: 'facility_images/community-1/facility-1/a.jpg' }]],
+    [
+      'images',
+      new Array(7).fill({
+        url: 'https://example.com/a.jpg',
+        storagePath: 'facility_images/community-1/facility-1/a.jpg',
+      }),
+    ],
+    [
+      'images',
+      [{ url: '/relative.jpg', storagePath: 'facility_images/community-1/facility-1/a.jpg' }],
+    ],
     ['images', [{ url: 'https://example.com/a.jpg', storagePath: '../outside.jpg' }]],
     ['isFree', 'true'],
     ['isAvailable', 1],

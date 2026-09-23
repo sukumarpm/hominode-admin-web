@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -31,6 +32,30 @@ vi.mock('../actions', async () => ({
 vi.mock('../data', async () => ({
   ...(await vi.importActual<typeof import('../data')>('../data')),
   useRows: vi.fn(),
+}));
+
+vi.mock('../subscriptionContext', () => ({
+  useSubscription: () => ({
+    entitlement: {
+      communityId: 'community-1',
+      planId: 'plus',
+      planName: 'Plus',
+      status: 'active',
+      startsAtMs: null,
+      endsAtMs: null,
+      features: {
+        facilityDirectory: true,
+        facilityBooking: true,
+        events: true,
+        communityWall: true,
+      },
+      limits: {},
+      schemaVersion: 1,
+    },
+    loading: false,
+    error: '',
+  }),
+  SubscriptionProvider: ({ children }: { children: ReactNode }) => children,
 }));
 
 let facilities: Row[];
@@ -267,7 +292,7 @@ describe('Facilities page', () => {
 
   it('keeps the facilities page controls and create modal behavior', () => {
     mount();
-    expect(screen.getByRole('link', { name: /My bookings/ })).toHaveAttribute('href', '/bookings');
+    expect(screen.getByRole('link', { name: /^Bookings$/ })).toHaveAttribute('href', '/bookings');
     expect(screen.getByRole('textbox', { name: 'Search facilities' })).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: 'Filter by status' })).toBeInTheDocument();
 
@@ -504,7 +529,12 @@ describe('Facilities page', () => {
   it('removes a legacy imageUrl by saving an empty managed gallery', async () => {
     mount();
     openEdit();
-    fireEvent.click(within(screen.getByText('Existing primary image').parentElement!.parentElement!).getByRole('button', { name: 'Remove' }));
+    fireEvent.click(
+      within(screen.getByText('Existing primary image').parentElement!.parentElement!).getByRole(
+        'button',
+        { name: 'Remove' },
+      ),
+    );
     submit();
 
     await waitFor(() =>
@@ -549,8 +579,9 @@ describe('Facilities page', () => {
   it('rejects more than six selected facility photos in the UI', () => {
     mount();
     openCreate();
-    const files = Array.from({ length: 7 }, (_, index) =>
-      new File(['x'], `photo-${index}.jpg`, { type: 'image/jpeg' }),
+    const files = Array.from(
+      { length: 7 },
+      (_, index) => new File(['x'], `photo-${index}.jpg`, { type: 'image/jpeg' }),
     );
     selectFacilityPhotos(files);
 
@@ -627,7 +658,9 @@ describe('Facilities page', () => {
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
 
       expect(setFacilityAvailability).toHaveBeenCalledExactlyOnceWith(session, id, available);
-      expect(within(facilityCard(name)).getByText(available ? 'Active' : 'Inactive')).toBeInTheDocument();
+      expect(
+        within(facilityCard(name)).getByText(available ? 'Active' : 'Inactive'),
+      ).toBeInTheDocument();
     },
   );
 
@@ -683,7 +716,9 @@ describe('Facilities page', () => {
         change('Facility name', 'New hall');
         submit();
       } else {
-        vi.mocked(setFacilityAvailability).mockRejectedValueOnce(Error('Community access revoked.'));
+        vi.mocked(setFacilityAvailability).mockRejectedValueOnce(
+          Error('Community access revoked.'),
+        );
         openDetails();
         fireEvent.click(screen.getByRole('button', { name: 'Deactivate facility' }));
       }

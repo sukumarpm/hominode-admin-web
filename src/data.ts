@@ -59,7 +59,7 @@ export function querySpec(s: Session, m: Module): Spec {
     billing: 'bills',
     payments: 'payments',
     notices: 'notices',
-    events: 'events',
+    events: 'events_announcements',
     documents: 'documents',
     community: 'posts',
     messages: 'chats',
@@ -80,6 +80,7 @@ export function querySpec(s: Session, m: Module): Spec {
       ['appId', '==', s.role],
     );
   if (m === 'residents') filters.push(['role', '==', 'resident']);
+  if (m === 'events') filters.push(['type', '==', 'event']);
   if (s.role === 'resident') {
     if (['residents', 'parking', 'deliveries'].includes(m))
       throw Error(

@@ -6,9 +6,7 @@ import { firebase } from './firebase';
 import { APP_ROLE } from './role';
 function friendlyPhoneAuthError(error: unknown): string {
   const code =
-    typeof error === 'object' &&
-      error !== null &&
-      'code' in error
+    typeof error === 'object' && error !== null && 'code' in error
       ? String((error as { code?: unknown }).code)
       : '';
 
@@ -65,8 +63,7 @@ export function Login({ communityName }: { communityName?: string }) {
       if (confirmation) {
         await confirmation.confirm(code);
       } else {
-        if (!phone)
-          throw Error('Enter a valid phone number.');
+        if (!phone) throw Error('Enter a valid phone number.');
         verifier.current?.clear();
         verifier.current = new RecaptchaVerifier(firebase().auth, 'phone-recaptcha', {
           size: 'normal',

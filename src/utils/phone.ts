@@ -22,9 +22,7 @@ const displayNames = new Intl.DisplayNames(['en'], {
 function flagForCountry(country: CountryCode): string {
   return country
     .toUpperCase()
-    .replace(/./g, (char) =>
-      String.fromCodePoint(127397 + char.charCodeAt(0)),
-    );
+    .replace(/./g, (char) => String.fromCodePoint(127397 + char.charCodeAt(0)));
 }
 
 export const phoneCountries: PhoneCountry[] = getCountries()
@@ -45,10 +43,7 @@ export function getPhonePlaceholder(country: CountryCode): string {
   }
 }
 
-export function normalizePhone(
-  value: string,
-  country: CountryCode,
-): string | null {
+export function normalizePhone(value: string, country: CountryCode): string | null {
   const input = value.trim();
 
   if (!input) return null;
@@ -85,9 +80,7 @@ export function normalizePhone(
   return null;
 }
 
-export function detectPhoneCountry(
-  value: string,
-): CountryCode | undefined {
+export function detectPhoneCountry(value: string): CountryCode | undefined {
   const input = value.trim();
 
   if (!input) return undefined;
@@ -109,9 +102,7 @@ export function detectPhoneCountry(
   return undefined;
 }
 
-export function formatPhoneForEditing(
-  e164: string,
-): { country?: CountryCode; display: string } {
+export function formatPhoneForEditing(e164: string): { country?: CountryCode; display: string } {
   const parsed = parsePhoneNumberFromString(e164);
 
   if (!parsed) {

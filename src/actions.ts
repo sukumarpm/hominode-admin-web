@@ -24,6 +24,146 @@ import {
   type UpdateFacilityInput,
 } from './models';
 import { assertResident, assertScope, parseCommunity, parseProfile } from './policy';
+
+export async function createEvent(
+  session: Session,
+  values: {
+    title: string;
+    category?: string;
+    description?: string;
+    eventDate: string;
+    time?: string;
+    location?: string;
+    totalCapacity?: number;
+  },
+) {
+  const s = await currentAuthority(session);
+
+  if (s.role !== 'admin' || s.profile.role !== 'admin') {
+    throw Error('An administrator is required.');
+  }
+
+  const title = required(values.title, 'Event title');
+  const rawDate = required(values.eventDate, 'Event date');
+
+  const combined = values.time?.trim() ? `${rawDate}T${values.time.trim()}` : `${rawDate}T00:00`;
+
+  const parsedDate = new Date(combined);
+
+  if (Number.isNaN(parsedDate.getTime())) {
+    throw Error('Enter a valid event date and time.');
+  }
+
+  return addDoc(collection(firebase().db, 'events_announcements'), {
+    type: 'event',
+    title,
+    category: values.category?.trim() || 'General',
+    description: values.description?.trim() || '',
+    eventDate: Timestamp.fromDate(parsedDate),
+    date: Timestamp.fromDate(parsedDate),
+    time: values.time?.trim() || '',
+    location: values.location?.trim() || '',
+    ...(typeof values.totalCapacity === 'number' &&
+    Number.isFinite(values.totalCapacity) &&
+    values.totalCapacity > 0
+      ? { totalCapacity: values.totalCapacity }
+      : {}),
+    status: 'upcoming',
+    communityId: s.community.id,
+    adminId: s.uid,
+    authorId: s.uid,
+    authorName: s.profile.name,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+}
+
+
+export async function uploadEventImages(
+  session: Session,
+  eventId: string,
+  files: File[],
+) {
+  const s = await currentAuthority(session);
+
+  if (s.role !== 'admin' || s.profile.role !== 'admin') {
+    throw Error('An administrator is required.');
+  }
+
+  if (!eventId.trim()) throw Error('Event ID is required.');
+  if (!files.length) return [];
+  if (files.length > 6) throw Error('An event can have at most 6 images.');
+
+  const allowed: Record<string, string> = {
+    'image/jpeg': 'jpg',
+    'image/png': 'png',
+    'image/webp': 'webp',
+  };
+
+  const eventRef = doc(firebase().db, 'events_announcements', eventId);
+  const eventSnapshot = await getDocFromServer(eventRef);
+
+  if (!eventSnapshot.exists()) throw Error('Event not found.');
+
+  const eventData = eventSnapshot.data();
+
+  if (eventData.communityId !== s.community.id) {
+    throw Error('Event is outside this community.');
+  }
+
+  const uploaded: Array<{
+    url: string;
+    storagePath: string;
+    name: string;
+  }> = [];
+
+  try {
+    for (const file of files) {
+      const ext = allowed[file.type];
+
+      if (!ext || file.size <= 0 || file.size > 5 * 1024 * 1024) {
+        throw Error('Choose JPG, PNG or WebP images no larger than 5 MB each.');
+      }
+
+      const storagePath =
+        `event_images/${s.community.id}/${eventId}/${randomImageId()}.${ext}`;
+
+      const object = ref(firebase().storage, storagePath);
+
+      await uploadBytes(object, file, {
+        contentType: file.type,
+      });
+
+      const url = await getDownloadURL(object);
+
+      uploaded.push({
+        url,
+        storagePath,
+        name: file.name,
+      });
+    }
+
+    const imageUrls = uploaded.map((image) => image.url);
+
+    await updateDoc(eventRef, {
+      images: uploaded,
+      imageUrls,
+      imageUrl: imageUrls[0] || '',
+      updatedAt: serverTimestamp(),
+    });
+
+    return uploaded;
+  } catch (error) {
+    await Promise.allSettled(
+      uploaded.map((image) =>
+        deleteObject(ref(firebase().storage, image.storagePath)),
+      ),
+    );
+
+    throw error;
+  }
+}
+
 export async function currentAuthority(s: Session) {
   const f = firebase();
   const user = f.auth.currentUser;
@@ -91,8 +231,7 @@ const FACILITY_IMAGE_TYPES: Record<string, string> = {
 
 function facilityHttpUrl(value: unknown, label: string) {
   const text = facilityString(value, label, true);
-  if (!/^https?:\/\//i.test(text))
-    throw Error(`${label} must be an http:// or https:// URL.`);
+  if (!/^https?:\/\//i.test(text)) throw Error(`${label} must be an http:// or https:// URL.`);
 
   let url: URL;
   try {
@@ -136,7 +275,8 @@ function facilityImages(value: unknown): FacilityImage[] {
     throw Error(`A facility can have at most ${FACILITY_IMAGE_LIMIT} images.`);
   const images = value.map(facilityImage);
   const paths = new Set(images.map((image) => image.storagePath));
-  if (paths.size !== images.length) throw Error('Facility images cannot contain duplicate storage paths.');
+  if (paths.size !== images.length)
+    throw Error('Facility images cannot contain duplicate storage paths.');
   return images;
 }
 
@@ -190,11 +330,7 @@ function facilityFields(values: UpdateFacilityInput): Data {
       fields[key] = facilityBoolean(value, key);
     } else if (key === 'pricingMode') {
       fields[key] = facilityPricingMode(value);
-    } else if (
-      key === 'pricePerDay' ||
-      key === 'ownerPricePerDay' ||
-      key === 'tenantPricePerDay'
-    ) {
+    } else if (key === 'pricePerDay' || key === 'ownerPricePerDay' || key === 'tenantPricePerDay') {
       const label =
         key === 'ownerPricePerDay'
           ? 'Owner price per day'
@@ -264,14 +400,8 @@ export async function createFacility(session: Session, values: CreateFacilityInp
     fields.pricingMode = 'resident_type';
     fields.isFree = false;
     fields.pricePerDay = 0;
-    fields.ownerPricePerDay = facilityPrice(
-      fields.ownerPricePerDay,
-      'Owner price per day',
-    );
-    fields.tenantPricePerDay = facilityPrice(
-      fields.tenantPricePerDay,
-      'Tenant price per day',
-    );
+    fields.ownerPricePerDay = facilityPrice(fields.ownerPricePerDay, 'Owner price per day');
+    fields.tenantPricePerDay = facilityPrice(fields.tenantPricePerDay, 'Tenant price per day');
   }
 
   fields.timeSlots ??= [];
@@ -400,8 +530,8 @@ export async function updateFacility(
   if (pricingEdited) {
     const existingMode: FacilityPricingMode =
       data.pricingMode === 'free' ||
-        data.pricingMode === 'flat' ||
-        data.pricingMode === 'resident_type'
+      data.pricingMode === 'flat' ||
+      data.pricingMode === 'resident_type'
         ? data.pricingMode
         : data.isFree === true
           ? 'free'
@@ -444,9 +574,7 @@ export async function updateFacility(
       fields.pricePerDay = 0;
 
       fields.ownerPricePerDay = facilityPrice(
-        Object.hasOwn(fields, 'ownerPricePerDay')
-          ? fields.ownerPricePerDay
-          : data.ownerPricePerDay,
+        Object.hasOwn(fields, 'ownerPricePerDay') ? fields.ownerPricePerDay : data.ownerPricePerDay,
         'Owner price per day',
       );
 
@@ -651,8 +779,8 @@ export async function submitProof(session: Session, billId: string, file: File) 
   } catch {
     throw Error(
       'The receipt uploaded, but the payment submission failed. Contact management with reference ' +
-      payment.id +
-      ' before retrying.',
+        payment.id +
+        ' before retrying.',
     );
   }
 }

@@ -65,10 +65,7 @@ function CreateRecord({
   const buildingRows = buildings.rows
     .map((row) => ({
       id: row.id,
-      name:
-        str(row.data.buildingName) ||
-        str(row.data.name) ||
-        row.id,
+      name: str(row.data.buildingName) || str(row.data.name) || row.id,
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
@@ -94,8 +91,7 @@ function CreateRecord({
   const selectedBuildingName =
     buildingRows.find((building) => building.id === buildingId)?.name || '';
 
-  const selectedUnitLabel =
-    unitsForBuilding.find((unit) => unit.id === flatId)?.label || '';
+  const selectedUnitLabel = unitsForBuilding.find((unit) => unit.id === flatId)?.label || '';
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const v = Object.fromEntries(new FormData(e.currentTarget)) as Record<string, string>;
@@ -112,36 +108,27 @@ function CreateRecord({
           throw Error('Select an available unit for this resident.');
         }
 
-        const selectedUnit = unitsForBuilding.find(
-          (unit) => unit.id === flatId,
-        );
+        const selectedUnit = unitsForBuilding.find((unit) => unit.id === flatId);
 
         if (!selectedUnit || selectedUnit.status !== 'vacant') {
           throw Error('The selected unit is no longer available.');
         }
 
-        const response = await call<{ onboardingId: string }>(
-          'createResidentOnboarding',
-          {
-            communityId: s.community!.id,
-            residentName: v.residentName.trim(),
-            phoneNumber: v.phoneNumber.trim(),
-            residentType: v.residentType,
-            email: v.email.trim() || null,
-            familyMembers: v.familyMembers
-              ? Number(v.familyMembers)
-              : null,
+        const response = await call<{ onboardingId: string }>('createResidentOnboarding', {
+          communityId: s.community!.id,
+          residentName: v.residentName.trim(),
+          phoneNumber: v.phoneNumber.trim(),
+          residentType: v.residentType,
+          email: v.email.trim() || null,
+          familyMembers: v.familyMembers ? Number(v.familyMembers) : null,
 
-            // Assignment is performed securely in the next callable.
-            buildingReference: null,
-            unitReference: null,
-          },
-        );
+          // Assignment is performed securely in the next callable.
+          buildingReference: null,
+          unitReference: null,
+        });
 
         if (!response.onboardingId) {
-          throw Error(
-            'Onboarding could not be confirmed. Contact support before retrying.',
-          );
+          throw Error('Onboarding could not be confirmed. Contact support before retrying.');
         }
 
         try {
@@ -154,18 +141,18 @@ function CreateRecord({
         } catch (assignmentError) {
           throw Error(
             'Resident onboarding was created, but the unit could not be reserved. ' +
-            `Onboarding reference: ${response.onboardingId}. ` +
-            (assignmentError instanceof Error
-              ? assignmentError.message
-              : 'Please retry the unit assignment.'),
+              `Onboarding reference: ${response.onboardingId}. ` +
+              (assignmentError instanceof Error
+                ? assignmentError.message
+                : 'Please retry the unit assignment.'),
           );
         }
 
         setResult(
           `Resident onboarding created successfully. ` +
-          `${selectedBuildingName} / ${selectedUnitLabel} has been reserved for the resident. ` +
-          `The resident can continue registration and any required identity verification in the mobile app. ` +
-          `Reference: ${response.onboardingId}`,
+            `${selectedBuildingName} / ${selectedUnitLabel} has been reserved for the resident. ` +
+            `The resident can continue registration and any required identity verification in the mobile app. ` +
+            `Reference: ${response.onboardingId}`,
         );
       } else {
         const floors = structure === 'apartment_building' ? Number(v.floors) : 1;
@@ -234,9 +221,7 @@ function CreateRecord({
                     required
                   >
                     <option value="">
-                      {buildings.loading
-                        ? 'Loading buildings…'
-                        : 'Select building'}
+                      {buildings.loading ? 'Loading buildings…' : 'Select building'}
                     </option>
 
                     {buildingRows.map((building) => {
@@ -272,24 +257,16 @@ function CreateRecord({
                     </option>
 
                     {unitsForBuilding.map((unit) => (
-                      <option
-                        key={unit.id}
-                        value={unit.id}
-                        disabled={unit.status !== 'vacant'}
-                      >
+                      <option key={unit.id} value={unit.id} disabled={unit.status !== 'vacant'}>
                         {unit.label} — {unit.status || 'unavailable'}
                       </option>
                     ))}
                   </select>
                 </label>
 
-                {buildings.error && (
-                  <p className="form-message">{buildings.error}</p>
-                )}
+                {buildings.error && <p className="form-message">{buildings.error}</p>}
 
-                {units.error && (
-                  <p className="form-message">{units.error}</p>
-                )}
+                {units.error && <p className="form-message">{units.error}</p>}
               </>
             ) : (
               <>

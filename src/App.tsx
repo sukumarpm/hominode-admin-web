@@ -11,6 +11,9 @@ import { APP_ROLE } from './role';
 import { useAuth } from './session';
 import { Shell } from './Shell';
 import { SosPage } from './SosPage';
+import { canUseFeature } from './subscription';
+import { SubscriptionProvider, useSubscription } from './subscriptionContext';
+
 function Guard() {
   const a = useAuth();
   if (a.loading) return <Boundary title="Welcome to Hominode" message="Verifying your session…" />;
@@ -94,6 +97,24 @@ function TenantGate() {
       </Boundary>
     );
   }
+  return <Outlet />;
+}
+function FeatureGuard({ feature }: { feature: string }) {
+  const { entitlement, loading } = useSubscription();
+
+  if (loading) {
+    return <Boundary title="Checking subscription" message="Verifying your community plan…" />;
+  }
+
+  if (!canUseFeature(entitlement, feature)) {
+    return (
+      <Boundary
+        title="Feature unavailable"
+        message="This feature is not included in the current community subscription."
+      />
+    );
+  }
+
   return <Outlet />;
 }
 function PlatformGuard() {
@@ -218,20 +239,38 @@ export function App() {
     <Routes>
       {APP_ROLE === 'admin' ? (
         <Route element={<Guard />}>
-          <Route element={<Shell />}>
+          <Route
+            element={
+              <SubscriptionProvider>
+                <Shell />
+              </SubscriptionProvider>
+            }
+          >
             <Route index element={<Navigate to="dashboard" replace />} />
             <Route path="dashboard" element={<Dashboard />} />
             <Route path="admin/*" element={<LegacyAdmin />} />
             <Route path="super-admin/*" element={<LegacyAdmin />} />
             <Route path="login" element={<Navigate to="/dashboard" replace />} />
             <Route element={<OperationsGuard />}>
-              {Object.entries(adminModules).map(([path, module]) => (
+              {Object.entries(adminModules)
+                .filter(([path]) => !['events', 'bookings'].includes(path))
+                .map(([path, module]) => (
+                  <Route
+                    key={path}
+                    path={path}
+                    element={<ModulePage key={path} module={module} routeName={path} />}
+                  />
+                ))}
+
+              <Route element={<FeatureGuard feature="events" />}>
+                <Route path="events" element={<ModulePage module="events" routeName="events" />} />
+              </Route>
+              <Route element={<FeatureGuard feature="facilityBooking" />}>
                 <Route
-                  key={path}
-                  path={path}
-                  element={<ModulePage key={path} module={module} routeName={path} />}
+                  path="bookings"
+                  element={<ModulePage module="bookings" routeName="bookings" />}
                 />
-              ))}
+              </Route>
               <Route path="community" element={<CommunityPage />} />
               <Route path="reports" element={<ReportsPage />} />
               <Route path="sos" element={<SosPage />} />

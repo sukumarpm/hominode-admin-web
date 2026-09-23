@@ -109,28 +109,51 @@ if (APP_ROLE === 'resident') {
   });
 }
 
-
 test('major modules render without mobile overflow', async ({ page }) => {
-  await page.setViewportSize({width:390,height:844});
-  const modules = APP_ROLE === 'admin'
-    ? [['residents','Residents'],['buildings','Buildings'],['units','Units'],['billing','Bills & Payments'],['notices','Notices'],['facilities','Facilities'],['reports','Reports'],['sos','Emergency SOS']]
-    : [['apartment','My Apartment'],['bills','Bills & Payments'],['facilities','Facilities'],['bookings','Bookings'],['notices','Notices'],['community','Community Wall'],['messages','Messages'],['documents','Documents'],['settings','Settings'],['sos','Emergency SOS']];
-  for (const [path,title] of modules) {
-    await page.goto(base+path);
-    await expect(page.getByRole('heading',{name:title,level:1,exact:true})).toBeVisible();
-    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await page.setViewportSize({ width: 390, height: 844 });
+  const modules =
+    APP_ROLE === 'admin'
+      ? [
+          ['residents', 'Residents'],
+          ['buildings', 'Buildings'],
+          ['units', 'Units'],
+          ['billing', 'Bills & Payments'],
+          ['notices', 'Notices'],
+          ['facilities', 'Facilities'],
+          ['reports', 'Reports'],
+          ['sos', 'Emergency SOS'],
+        ]
+      : [
+          ['apartment', 'My Apartment'],
+          ['bills', 'Bills & Payments'],
+          ['facilities', 'Facilities'],
+          ['bookings', 'Bookings'],
+          ['notices', 'Notices'],
+          ['community', 'Community Wall'],
+          ['messages', 'Messages'],
+          ['documents', 'Documents'],
+          ['settings', 'Settings'],
+          ['sos', 'Emergency SOS'],
+        ];
+  for (const [path, title] of modules) {
+    await page.goto(base + path);
+    await expect(page.getByRole('heading', { name: title, level: 1, exact: true })).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+      true,
+    );
   }
 });
-if (APP_ROLE === 'admin') test('resident onboarding and building forms are available', async ({page}) => {
-  await page.goto('/residents');
-  await page.getByRole('button',{name:'Add Resident',exact:true}).click();
-  await expect(page.getByRole('dialog')).toBeVisible();
-  await expect(page.getByLabel('Resident name')).toBeVisible();
-  await expect(page.getByLabel('Resident type')).toBeVisible();
-  await page.keyboard.press('Escape');
-  await page.goto('/buildings');
-  await page.getByRole('button',{name:'Add Building',exact:true}).click();
-  await expect(page.getByLabel('Structure type')).toBeVisible();
-  await page.getByLabel('Structure type').selectOption('villa_cluster');
-  await expect(page.getByLabel('Total units')).toBeVisible();
-});
+if (APP_ROLE === 'admin')
+  test('resident onboarding and building forms are available', async ({ page }) => {
+    await page.goto('/residents');
+    await page.getByRole('button', { name: 'Add Resident', exact: true }).click();
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await expect(page.getByLabel('Resident name')).toBeVisible();
+    await expect(page.getByLabel('Resident type')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await page.goto('/buildings');
+    await page.getByRole('button', { name: 'Add Building', exact: true }).click();
+    await expect(page.getByLabel('Structure type')).toBeVisible();
+    await page.getByLabel('Structure type').selectOption('villa_cluster');
+    await expect(page.getByLabel('Total units')).toBeVisible();
+  });

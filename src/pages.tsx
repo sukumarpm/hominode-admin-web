@@ -697,6 +697,74 @@ function ScopedModule({
                       )}
                     </div>
                   </article>
+                ) : module === 'events' ? (
+                  <button
+                    className="module-card event-card"
+                    key={row.id}
+                    onClick={() => setParams({ record: row.id })}
+                  >
+                    {facilityImageUrls(row.data)[0] ? (
+                      <div className="event-card-image">
+                        <img
+                          loading="lazy"
+                          src={facilityImageUrls(row.data)[0]}
+                          alt={titleOf(row.data)}
+                        />
+
+                        {facilityImageUrls(row.data).length > 1 && (
+                          <span className="event-card-photo-count">
+                            {facilityImageUrls(row.data).length} photos
+                          </span>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="event-card-image event-card-placeholder">
+                        <CalendarDays size={42} />
+                      </div>
+                    )}
+
+                    <div className="module-card-body event-card-body">
+                      <div className="event-card-top">
+                        <span className="event-card-category">
+                          {str(row.data.category) || 'Event'}
+                        </span>
+
+                        <Pill value={moduleStatus(module, row.data)} />
+                      </div>
+
+                      <h3>{titleOf(row.data)}</h3>
+
+                      <p>
+                        {first(
+                          row.data,
+                          ['description'],
+                          'Community event',
+                        )}
+                      </p>
+
+                      <div className="event-card-meta">
+                        <span>
+                          <CalendarDays size={14} />
+                          {dateLabel(
+                            row.data.eventDate ??
+                              row.data.date ??
+                              row.data.createdAt,
+                          )}
+                        </span>
+
+                        {str(row.data.location) && (
+                          <span>
+                            <span aria-hidden="true">⌖</span>
+                            {str(row.data.location)}
+                          </span>
+                        )}
+                      </div>
+
+                      <span className="card-more">
+                        View details <ArrowRight size={16} />
+                      </span>
+                    </div>
+                  </button>
                 ) : (
                   <button
                     className="module-card"

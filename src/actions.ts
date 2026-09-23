@@ -92,7 +92,6 @@ export async function uploadEventImages(
 
   if (!eventId.trim()) throw Error('Event ID is required.');
   if (!files.length) return [];
-  if (files.length > 6) throw Error('An event can have at most 6 images.');
 
   const allowed: Record<string, string> = {
     'image/jpeg': 'jpg',
@@ -109,6 +108,37 @@ export async function uploadEventImages(
 
   if (eventData.communityId !== s.community.id) {
     throw Error('Event is outside this community.');
+  }
+
+  const existingImages: Array<{
+    url: string;
+    storagePath: string;
+    name: string;
+  }> = Array.isArray(eventData.images)
+    ? eventData.images
+        .filter(
+          (image: unknown): image is {
+            url: string;
+            storagePath: string;
+            name: string;
+          } =>
+            !!image &&
+            typeof image === 'object' &&
+            !Array.isArray(image) &&
+            typeof (image as Record<string, unknown>).url === 'string' &&
+            typeof (image as Record<string, unknown>).storagePath === 'string',
+        )
+        .map((image) => ({
+          url: image.url,
+          storagePath: image.storagePath,
+          name: typeof image.name === 'string' ? image.name : '',
+        }))
+    : [];
+
+  if (existingImages.length + files.length > 6) {
+    throw Error(
+      `An event can have at most 6 images. This event already has ${existingImages.length}.`,
+    );
   }
 
   const uploaded: Array<{
@@ -143,10 +173,11 @@ export async function uploadEventImages(
       });
     }
 
-    const imageUrls = uploaded.map((image) => image.url);
+    const allImages = [...existingImages, ...uploaded];
+    const imageUrls = allImages.map((image) => image.url);
 
     await updateDoc(eventRef, {
-      images: uploaded,
+      images: allImages,
       imageUrls,
       imageUrl: imageUrls[0] || '',
       updatedAt: serverTimestamp(),
@@ -162,6 +193,70 @@ export async function uploadEventImages(
 
     throw error;
   }
+}
+
+
+export async function removeEventImage(
+  session: Session,
+  eventId: string,
+  storagePath: string,
+) {
+  const s = await currentAuthority(session);
+
+  if (s.role !== 'admin' || s.profile.role !== 'admin') {
+    throw Error('An administrator is required.');
+  }
+
+  if (!eventId.trim()) throw Error('Event ID is required.');
+
+  const eventRef = doc(firebase().db, 'events_announcements', eventId);
+  const snapshot = await getDocFromServer(eventRef);
+
+  if (!snapshot.exists()) throw Error('Event not found.');
+
+  const data = snapshot.data();
+
+  if (
+    data.communityId !== s.community.id ||
+    data.type !== 'event'
+  ) {
+    throw Error('Event is outside this community.');
+  }
+
+  const prefix = `event_images/${s.community.id}/${eventId}/`;
+
+  if (!storagePath.startsWith(prefix)) {
+    throw Error('Event image is outside this event.');
+  }
+
+  const images = Array.isArray(data.images)
+    ? data.images.filter(
+        (image: unknown) =>
+          !!image &&
+          typeof image === 'object' &&
+          !Array.isArray(image),
+      )
+    : [];
+
+  const remaining = images.filter(
+    (image: unknown) =>
+      (image as Record<string, unknown>).storagePath !== storagePath,
+  );
+
+  await deleteObject(ref(firebase().storage, storagePath));
+
+  const imageUrls = remaining
+    .map((image: unknown) =>
+      (image as Record<string, unknown>).url,
+    )
+    .filter((url: unknown): url is string => typeof url === 'string');
+
+  await updateDoc(eventRef, {
+    images: remaining,
+    imageUrls,
+    imageUrl: imageUrls[0] || '',
+    updatedAt: serverTimestamp(),
+  });
 }
 
 export async function currentAuthority(s: Session) {
@@ -689,14 +784,22 @@ export async function updateScoped(
 }
 export async function publishNotice(session: Session, v: Record<string, string>) {
   const s = await currentAuthority(session);
-  if (s.role !== 'admin') throw Error('An administrator is required.');
-  await addDoc(collection(firebase().db, 'notices'), {
+
+  if (s.role !== 'admin' || s.profile.role !== 'admin') {
+    throw Error('An administrator is required.');
+  }
+
+  return addDoc(collection(firebase().db, 'events_announcements'), {
+    type: 'announcement',
     communityId: s.community.id,
     title: required(v.title, 'Title'),
-    content: required(v.content, 'Content'),
-    targetFlats: [],
+    description: required(v.content, 'Announcement'),
+    content: required(v.content, 'Announcement'),
+    category: v.category?.trim() || 'General',
+    priority: ['high', 'medium', 'low'].includes(v.priority) ? v.priority : 'medium',
+    status: 'active',
     isActive: true,
-    status: 'published',
+    targetFlats: [],
     adminId: s.uid,
     authorId: s.uid,
     authorName: s.profile.name,
@@ -705,6 +808,132 @@ export async function publishNotice(session: Session, v: Record<string, string>)
     updatedAt: serverTimestamp(),
   });
 }
+
+export async function updateEvent(
+  session: Session,
+  eventId: string,
+  values: {
+    title: string;
+    category?: string;
+    description?: string;
+    eventDate: string;
+    time?: string;
+    location?: string;
+    totalCapacity?: number;
+    status?: string;
+  },
+) {
+  const s = await currentAuthority(session);
+
+  if (s.role !== 'admin' || s.profile.role !== 'admin') {
+    throw Error('An administrator is required.');
+  }
+
+  const record = doc(firebase().db, 'events_announcements', eventId);
+  const snapshot = await getDocFromServer(record);
+
+  if (!snapshot.exists()) throw Error('Event not found.');
+
+  const existing = snapshot.data();
+
+  if (
+    existing.communityId !== s.community.id ||
+    existing.type !== 'event'
+  ) {
+    throw Error('Event is outside this community.');
+  }
+
+  const title = required(values.title, 'Event title');
+  const rawDate = required(values.eventDate, 'Event date');
+
+  const combined = values.time?.trim()
+    ? `${rawDate}T${values.time.trim()}`
+    : `${rawDate}T00:00`;
+
+  const parsedDate = new Date(combined);
+
+  if (Number.isNaN(parsedDate.getTime())) {
+    throw Error('Enter a valid event date and time.');
+  }
+
+  const allowedStatuses = ['upcoming', 'active', 'completed', 'cancelled'];
+  const eventStatus = allowedStatuses.includes(values.status || '')
+    ? values.status
+    : existing.status || 'upcoming';
+
+  await updateDoc(record, {
+    title,
+    category: values.category?.trim() || 'General',
+    description: values.description?.trim() || '',
+    eventDate: Timestamp.fromDate(parsedDate),
+    date: Timestamp.fromDate(parsedDate),
+    time: values.time?.trim() || '',
+    location: values.location?.trim() || '',
+    ...(typeof values.totalCapacity === 'number' &&
+    Number.isFinite(values.totalCapacity) &&
+    values.totalCapacity > 0
+      ? { totalCapacity: values.totalCapacity }
+      : {}),
+    status: eventStatus,
+    updatedAt: serverTimestamp(),
+  });
+}
+
+export async function updateAnnouncement(
+  session: Session,
+  announcementId: string,
+  values: {
+    title: string;
+    description: string;
+    category?: string;
+    priority?: string;
+    status?: string;
+  },
+) {
+  const s = await currentAuthority(session);
+
+  if (s.role !== 'admin' || s.profile.role !== 'admin') {
+    throw Error('An administrator is required.');
+  }
+
+  const record = doc(firebase().db, 'events_announcements', announcementId);
+  const snapshot = await getDocFromServer(record);
+
+  if (!snapshot.exists()) throw Error('Announcement not found.');
+
+  const existing = snapshot.data();
+
+  if (
+    existing.communityId !== s.community.id ||
+    existing.type !== 'announcement'
+  ) {
+    throw Error('Announcement is outside this community.');
+  }
+
+  const allowedPriorities = ['high', 'medium', 'low'];
+  const allowedStatuses = ['active', 'inactive'];
+
+  const description = required(values.description, 'Announcement');
+
+  await updateDoc(record, {
+    title: required(values.title, 'Title'),
+    description,
+    content: description,
+    category: values.category?.trim() || 'General',
+    priority: allowedPriorities.includes(values.priority || '')
+      ? values.priority
+      : 'medium',
+    status: allowedStatuses.includes(values.status || '')
+      ? values.status
+      : existing.status || 'active',
+    isActive:
+      (allowedStatuses.includes(values.status || '')
+        ? values.status
+        : existing.status || 'active') === 'active',
+    updatedAt: serverTimestamp(),
+  });
+}
+
 export async function residentLifecycle(
   session: Session,
   userId: string,

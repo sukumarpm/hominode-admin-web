@@ -81,6 +81,14 @@ export function querySpec(s: Session, m: Module): Spec {
     );
   if (m === 'residents') filters.push(['role', '==', 'resident']);
   if (m === 'events') filters.push(['type', '==', 'event']);
+
+  if (m === 'notices' && s.role === 'admin') {
+    filters.push(['type', '==', 'announcement']);
+    return {
+      collection: 'events_announcements',
+      filters,
+    };
+  }
   if (s.role === 'resident') {
     if (['residents', 'parking', 'deliveries'].includes(m))
       throw Error(

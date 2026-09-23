@@ -21,6 +21,9 @@ import {
   createComplaint,
   createEvent,
   uploadEventImages,
+  removeEventImage,
+  updateAnnouncement,
+  updateEvent,
   createVisitor,
   currentAuthority,
   publishNotice,
@@ -231,6 +234,93 @@ function FacilityGallery({ data, title }: { data: Data; title: string }) {
               <img src={url} alt="" />
             </button>
           ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+
+function EventDetailView({ data, title }: { data: Data; title: string }) {
+  const eventDate = data.eventDate ?? data.date;
+  const category = str(data.category) || 'Community event';
+  const location = str(data.location);
+  const eventTime = str(data.time);
+
+  const capacity =
+    typeof data.totalCapacity === 'number' && Number.isFinite(data.totalCapacity)
+      ? data.totalCapacity
+      : typeof data.capacity === 'number' && Number.isFinite(data.capacity)
+        ? data.capacity
+        : null;
+
+  const description = str(data.description);
+
+  return (
+    <section className="event-detail-shell">
+      <FacilityGallery data={data} title={title} />
+
+      <div className="event-detail-heading">
+        <div>
+          <span className="event-detail-category">{category}</span>
+          <h2>{title}</h2>
+        </div>
+
+        <Pill value={status(data)} />
+      </div>
+
+      <div className="event-detail-meta">
+        <div>
+          <span className="event-detail-meta-icon">
+            <CalendarDays size={19} />
+          </span>
+          <span>
+            <small>Date</small>
+            <strong>{dateLabel(eventDate)}</strong>
+          </span>
+        </div>
+
+        {eventTime && (
+          <div>
+            <span className="event-detail-meta-icon">
+              <Clock3 size={19} />
+            </span>
+            <span>
+              <small>Time</small>
+              <strong>{eventTime}</strong>
+            </span>
+          </div>
+        )}
+
+        {location && (
+          <div>
+            <span className="event-detail-meta-icon event-location-mark">
+              ⌖
+            </span>
+            <span>
+              <small>Location</small>
+              <strong>{location}</strong>
+            </span>
+          </div>
+        )}
+
+        {capacity != null && (
+          <div>
+            <span className="event-detail-meta-icon">
+              <Users size={19} />
+            </span>
+            <span>
+              <small>Capacity</small>
+              <strong>{capacity} people</strong>
+            </span>
+          </div>
+        )}
+      </div>
+
+      {description && (
+        <div className="event-detail-description">
+          <small>About this event</small>
+          <p>{description}</p>
         </div>
       )}
     </section>
@@ -1019,6 +1109,28 @@ function CreateForm({ s, module, onClose }: { s: Session; module: Module; onClos
                   </select>
                 </label>
               )}
+              {module === 'notices' && (
+                <>
+                  <label>
+                    Category
+                    <input
+                      name="category"
+                      placeholder="General, Maintenance, Security..."
+                      maxLength={100}
+                    />
+                  </label>
+
+                  <label>
+                    Priority
+                    <select name="priority" defaultValue="medium">
+                      <option value="low">Low</option>
+                      <option value="medium">Medium</option>
+                      <option value="high">High</option>
+                    </select>
+                  </label>
+                </>
+              )}
+
               {module === 'events' && (
                 <>
                   <label>
@@ -1200,6 +1312,472 @@ function CreateForm({ s, module, onClose }: { s: Session; module: Module; onClos
     </Modal>
   );
 }
+
+function contentDateInputValue(value: unknown) {
+  let date: Date | null = null;
+
+  if (value instanceof Date) {
+    date = value;
+  } else if (
+    value &&
+    typeof value === 'object' &&
+    'toDate' in value &&
+    typeof (value as { toDate?: unknown }).toDate === 'function'
+  ) {
+    date = (value as { toDate: () => Date }).toDate();
+  } else if (typeof value === 'string' || typeof value === 'number') {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) date = parsed;
+  }
+
+  if (!date) return '';
+
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+
+  return `${year}-${month}-${day}`;
+}
+
+function ContentEditForm({
+  s,
+  module,
+  row,
+  onClose,
+  onSaved,
+}: {
+  s: Session;
+  module: 'events' | 'notices';
+  row: Row;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const d = row.data;
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [newImages, setNewImages] = useState<File[]>([]);
+  const [previews, setPreviews] = useState<string[]>([]);
+
+  const [existingEventImages, setExistingEventImages] = useState<
+    Array<{
+      url: string;
+      storagePath: string;
+      name: string;
+    }>
+  >(() =>
+    Array.isArray(d.images)
+      ? d.images
+          .filter(
+            (image): image is {
+              url: string;
+              storagePath: string;
+              name: string;
+            } =>
+              !!image &&
+              typeof image === 'object' &&
+              !Array.isArray(image) &&
+              typeof (image as Record<string, unknown>).url === 'string' &&
+              typeof (image as Record<string, unknown>).storagePath === 'string',
+          )
+          .map((image) => ({
+            url: image.url,
+            storagePath: image.storagePath,
+            name: typeof image.name === 'string' ? image.name : '',
+          }))
+      : [],
+  );
+
+  useEffect(() => {
+    const urls = newImages.map((file) => URL.createObjectURL(file));
+    setPreviews(urls);
+
+    return () => urls.forEach((url) => URL.revokeObjectURL(url));
+  }, [newImages]);
+
+  async function submit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setBusy(true);
+    setError('');
+
+    const values = Object.fromEntries(
+      new FormData(e.currentTarget),
+    ) as Record<string, string>;
+
+    try {
+      if (module === 'events') {
+        await updateEvent(s, row.id, {
+          title: values.title,
+          category: values.category,
+          description: values.description,
+          eventDate: values.eventDate,
+          time: values.time,
+          location: values.location,
+          totalCapacity: values.totalCapacity
+            ? Number(values.totalCapacity)
+            : undefined,
+          status: values.status,
+        });
+
+        if (newImages.length) {
+          await uploadEventImages(s, row.id, newImages);
+        }
+      } else {
+        await updateAnnouncement(s, row.id, {
+          title: values.title,
+          description: values.description,
+          category: values.category,
+          priority: values.priority,
+          status: values.status,
+        });
+      }
+
+      onSaved();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Unable to save changes.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      title={module === 'events' ? 'Edit Event' : 'Edit Announcement'}
+      onClose={onClose}
+    >
+      <form onSubmit={submit}>
+        <fieldset disabled={busy}>
+          <label>
+            Title
+            <input
+              name="title"
+              required
+              maxLength={160}
+              defaultValue={str(d.title)}
+            />
+          </label>
+
+          <label>
+            Category
+            <input
+              name="category"
+              maxLength={100}
+              defaultValue={str(d.category)}
+            />
+          </label>
+
+          {module === 'events' ? (
+            <>
+              <label>
+                Date
+                <input
+                  type="date"
+                  name="eventDate"
+                  required
+                  defaultValue={contentDateInputValue(
+                    d.eventDate ?? d.date,
+                  )}
+                />
+              </label>
+
+              <label>
+                Time
+                <input
+                  type="time"
+                  name="time"
+                  defaultValue={str(d.time)}
+                />
+              </label>
+
+              <label>
+                Location
+                <input
+                  name="location"
+                  required
+                  maxLength={200}
+                  defaultValue={str(d.location)}
+                />
+              </label>
+
+              <label>
+                Capacity
+                <input
+                  type="number"
+                  name="totalCapacity"
+                  min="1"
+                  step="1"
+                  defaultValue={
+                    typeof d.totalCapacity === 'number'
+                      ? d.totalCapacity
+                      : ''
+                  }
+                />
+              </label>
+
+              <label>
+                Status
+                <select
+                  name="status"
+                  defaultValue={str(d.status) || 'upcoming'}
+                >
+                  <option value="upcoming">Upcoming</option>
+                  <option value="active">Active</option>
+                  <option value="completed">Completed</option>
+                  <option value="cancelled">Cancelled</option>
+                </select>
+              </label>
+
+              {existingEventImages.length > 0 && (
+                <div className="event-image-field">
+                  <div className="event-image-heading">
+                    <div>
+                      <strong>Existing photos</strong>
+                      <span>
+                        {existingEventImages.length} photo
+                        {existingEventImages.length === 1 ? '' : 's'} currently attached
+                      </span>
+                    </div>
+
+                    <span className="event-image-counter">
+                      {existingEventImages.length + newImages.length}/6 total
+                    </span>
+                  </div>
+
+                  <div className="event-image-previews">
+                    {existingEventImages.map((image, index) => (
+                      <div
+                        className="event-image-preview"
+                        key={image.storagePath}
+                      >
+                        <img
+                          src={image.url}
+                          alt={`Existing event photo ${index + 1}`}
+                        />
+
+                        {index === 0 && (
+                          <span className="event-cover-badge">
+                            Cover
+                          </span>
+                        )}
+
+                        <button
+                          type="button"
+                          aria-label={`Remove existing photo ${index + 1}`}
+                          disabled={busy}
+                          onClick={() => {
+                            const confirmed = window.confirm(
+                              'Remove this event photo?',
+                            );
+
+                            if (!confirmed) return;
+
+                            setBusy(true);
+                            setError('');
+
+                            void removeEventImage(
+                              s,
+                              row.id,
+                              image.storagePath,
+                            )
+                              .then(() => {
+                                setExistingEventImages((current) =>
+                                  current.filter(
+                                    (item) =>
+                                      item.storagePath !== image.storagePath,
+                                  ),
+                                );
+                              })
+                              .catch((e: unknown) => {
+                                setError(
+                                  e instanceof Error
+                                    ? e.message
+                                    : 'Unable to remove image.',
+                                );
+                              })
+                              .finally(() => {
+                                setBusy(false);
+                              });
+                          }}
+                        >
+                          ×
+                        </button>
+
+                        {image.name && (
+                          <small title={image.name}>
+                            {image.name}
+                          </small>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="event-image-field">
+                <div className="event-image-heading">
+                  <div>
+                    <strong>Add more photos</strong>
+                    <span>
+                      JPG, PNG or WebP · Maximum 6 photos total
+                    </span>
+                  </div>
+
+                  <span className="event-image-counter">
+                    {existingEventImages.length + newImages.length}/6 total
+                  </span>
+                </div>
+
+                <label className="event-image-picker">
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    multiple
+                    onChange={(e) => {
+                      const selected = Array.from(e.target.files ?? []);
+
+                      setNewImages((current) => {
+                        const merged = [...current];
+
+                        for (const file of selected) {
+                          const duplicate = merged.some(
+                            (existing) =>
+                              existing.name === file.name &&
+                              existing.size === file.size &&
+                              existing.lastModified === file.lastModified,
+                          );
+
+                          if (!duplicate) {
+                            merged.push(file);
+                          }
+                        }
+
+                        const available =
+                          Math.max(0, 6 - existingEventImages.length);
+
+                        if (merged.length > available) {
+                          setError(
+                            `You can add only ${available} more photo${
+                              available === 1 ? '' : 's'
+                            }. Maximum is 6 total.`,
+                          );
+
+                          return merged.slice(0, available);
+                        }
+
+                        setError('');
+                        return merged;
+                      });
+
+                      e.target.value = '';
+                    }}
+                  />
+
+                  <span className="event-image-picker-icon">＋</span>
+
+                  <span className="event-image-picker-copy">
+                    <strong>Add event photos</strong>
+                    <small>JPG, PNG or WebP · 5 MB each</small>
+                  </span>
+
+                  <span className="event-image-picker-action">
+                    Browse
+                  </span>
+                </label>
+
+                {!!previews.length && (
+                  <div className="event-image-previews">
+                    {newImages.map((file, index) => (
+                      <div
+                        className="event-image-preview"
+                        key={`${file.name}-${file.lastModified}`}
+                      >
+                        <img
+                          src={previews[index]}
+                          alt={`New event photo ${index + 1}`}
+                        />
+
+                        <button
+                          type="button"
+                          aria-label={`Remove ${file.name}`}
+                          onClick={() =>
+                            setNewImages((current) =>
+                              current.filter((_, i) => i !== index),
+                            )
+                          }
+                        >
+                          ×
+                        </button>
+
+                        <small title={file.name}>
+                          {file.name}
+                        </small>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </>
+          ) : (
+            <>
+              <label>
+                Priority
+                <select
+                  name="priority"
+                  defaultValue={str(d.priority) || 'medium'}
+                >
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                </select>
+              </label>
+
+              <label>
+                Status
+                <select
+                  name="status"
+                  defaultValue={str(d.status) || 'active'}
+                >
+                  <option value="active">Active</option>
+                  <option value="inactive">Inactive</option>
+                </select>
+              </label>
+            </>
+          )}
+
+          <label>
+            {module === 'events' ? 'Description' : 'Announcement'}
+            <textarea
+              name="description"
+              rows={5}
+              required
+              maxLength={5000}
+              defaultValue={
+                str(d.description) ||
+                str(d.content)
+              }
+            />
+          </label>
+
+          {error && (
+            <p role="alert" className="form-error">
+              {error}
+            </p>
+          )}
+
+          <div className="button-row">
+            <button type="button" onClick={onClose}>
+              Cancel
+            </button>
+
+            <button className="primary" type="submit">
+              {busy ? 'Saving…' : 'Save changes'}
+            </button>
+          </div>
+        </fieldset>
+      </form>
+    </Modal>
+  );
+}
+
 function RecordDetails({
   s,
   module,
@@ -1215,7 +1793,12 @@ function RecordDetails({
   onFacilitySaved: () => void;
   startEditing?: boolean;
 }) {
-  const [editingFacility, setEditingFacility] = useState(startEditing);
+  const [editingFacility, setEditingFacility] = useState(
+    module === 'facilities' && startEditing,
+  );
+  const [editingContent, setEditingContent] = useState(
+    (module === 'events' || module === 'notices') && startEditing,
+  );
   const [busy, setBusy] = useState(false),
     [message, setMessage] = useState(''),
     [reason, setReason] = useState(''),
@@ -1245,6 +1828,21 @@ function RecordDetails({
     d.isApproved !== true &&
     d.actualArrival == null &&
     d.departure == null;
+  if (
+    (module === 'events' || module === 'notices') &&
+    s.role === 'admin' &&
+    editingContent
+  )
+    return (
+      <ContentEditForm
+        s={s}
+        module={module}
+        row={row}
+        onClose={() => setEditingContent(false)}
+        onSaved={onFacilitySaved}
+      />
+    );
+
   if (module === 'facilities' && s.role === 'admin' && editingFacility)
     return (
       <FacilityForm
@@ -1256,13 +1854,23 @@ function RecordDetails({
     );
   return (
     <Modal title={titleOf(d)} onClose={onClose}>
-      {(module === 'facilities' || module === 'events') && (
-        <FacilityGallery data={d} title={titleOf(d)} />
+      {module === 'events' ? (
+        <EventDetailView data={d} title={titleOf(d)} />
+      ) : (
+        <>
+          {module === 'facilities' && (
+            <FacilityGallery data={d} title={titleOf(d)} />
+          )}
+          <Pill value={moduleStatus(module, d)} />
+          <DetailFields
+            data={
+              module === 'facilities'
+                ? { ...d, status: undefined, pricePerDay: undefined }
+                : d
+            }
+          />
+        </>
       )}
-      <Pill value={moduleStatus(module, d)} />
-      <DetailFields
-        data={module === 'facilities' ? { ...d, status: undefined, pricePerDay: undefined } : d}
-      />
       {module === 'facilities' && (
         <>
           <dl className="detail-fields">
@@ -1348,6 +1956,19 @@ function RecordDetails({
       {module === 'residents' && s.role === 'admin' && <ResidentReview s={s} row={row} />}
       <div className="detail-actions">
         <fieldset disabled={busy}>
+          {(module === 'events' || module === 'notices') &&
+            s.role === 'admin' && (
+              <button
+                type="button"
+                className="primary"
+                onClick={() => setEditingContent(true)}
+              >
+                <Pencil size={16} />
+                {module === 'events'
+                  ? 'Edit Event'
+                  : 'Edit Announcement'}
+              </button>
+            )}
           {module === 'notifications' && d.isRead !== true && (
             <button
               className="primary"

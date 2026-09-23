@@ -4924,3 +4924,132 @@ dialog:has(.facility-admin-form) > *:not(.dialog-heading) {
 .event-card .card-more {
   margin-top: 14px;
 }
+
+/* ==========================================================
+   EVENT DETAILS
+   ========================================================== */
+
+.event-detail-shell {
+  display: grid;
+  gap: 18px;
+}
+
+.event-detail-shell .facility-detail-gallery {
+  margin-bottom: 0;
+}
+
+.event-detail-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 18px;
+}
+
+.event-detail-heading > div {
+  min-width: 0;
+}
+
+.event-detail-heading h2 {
+  margin-top: 7px;
+  font-size: 22px;
+  color: #10214a;
+}
+
+.event-detail-category {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: #edf5ff;
+  color: #1769d2;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.event-detail-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.event-detail-meta > div {
+  min-width: 0;
+  min-height: 74px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px;
+  border: 1px solid #e2eaf5;
+  border-radius: 13px;
+  background: linear-gradient(135deg, #f9fcff, #f1f7ff);
+}
+
+.event-detail-meta-icon {
+  width: 39px;
+  height: 39px;
+  border-radius: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: #dfeeff;
+  color: #0865ff;
+  font-size: 22px;
+}
+
+.event-location-mark {
+  font-size: 24px;
+  line-height: 1;
+}
+
+.event-detail-meta > div > span:last-child {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.event-detail-meta small {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: #73849b;
+}
+
+.event-detail-meta strong {
+  font-size: 12px;
+  line-height: 1.4;
+  color: #14274b;
+  overflow-wrap: anywhere;
+}
+
+.event-detail-description {
+  padding: 16px;
+  border-radius: 14px;
+  background: #f8fbff;
+  border: 1px solid #e5edf7;
+}
+
+.event-detail-description small {
+  display: block;
+  margin-bottom: 7px;
+  color: #657892;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+
+.event-detail-description p {
+  color: #344b68;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 640px) {
+  .event-detail-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .event-detail-heading h2 {
+    font-size: 19px;
+  }
+}

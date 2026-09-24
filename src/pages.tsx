@@ -34,6 +34,7 @@ import {
 } from './actions';
 import { AdminCreateButtons, ResidentReview } from './AdminTools';
 import { BillingCreateModal } from './BillingCreateModal';
+import { CommunityPaymentSettings } from './CommunityPaymentSettings';
 import { Card, Modal, Pill, State } from './components';
 import { PhoneNumberInput } from './components/PhoneNumberInput';
 import { safeUrl, titleOf, useRows, type Module } from './data';
@@ -2202,6 +2203,9 @@ export function ProfilePage({
           )}
         </Card>
       </div>
+      {settings && s.role === 'admin' && s.community && (
+        <CommunityPaymentSettings session={s} />
+      )}
     </>
   );
 }

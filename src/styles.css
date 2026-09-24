@@ -1537,6 +1537,33 @@ dialog::backdrop {
   margin: 20px 0 8px;
 }
 
+.community-payment-settings {
+  margin-top: 20px;
+}
+
+.community-payment-summary {
+  display: grid;
+  gap: 12px;
+}
+
+.community-payment-status {
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.community-payment-switch {
+  flex-direction: row;
+  align-items: center;
+}
+
+.community-payment-switch input {
+  width: 18px;
+  min-height: 18px;
+  height: 18px;
+  margin: 0;
+  padding: 0;
+}
+
 .sos-intro {
   text-align: center;
   display: flex;

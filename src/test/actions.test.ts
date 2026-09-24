@@ -5,6 +5,10 @@ import {
   createVisitor,
   currentAuthority,
   deleteFacilityImage,
+  getCommunityPaymentConfig,
+  parseCommunityPaymentConfig,
+  updateCommunityPaymentConfig,
+  communityPaymentConfigPayload,
   setFacilityAvailability,
   submitProof,
   updateFacility,
@@ -75,6 +79,225 @@ beforeEach(() => {
         ? { name: 'Green Valley', slug: 'green-valley', isActive: true }
         : m.profile,
   }));
+});
+
+function adminPaymentSession() {
+  m.user = {
+    uid: 'admin-1',
+    phoneNumber: '+639171234567',
+    getIdTokenResult: async () => ({ signInProvider: 'phone' }),
+  };
+  m.profile = { ...adminData };
+  return makeSession('admin');
+}
+
+function storedPaymentConfig(
+  directUpi: Data = {
+    enabled: true,
+    vpa: ' association@upi-bank ',
+    payeeName: ' Green Valley Association ',
+  },
+): Data {
+  return {
+    communityId: 'community-1',
+    version: 1,
+    directUpi,
+    updatedBy: 'admin-1',
+    updatedAt: new Date('2026-01-02T03:04:05Z'),
+  };
+}
+
+function mockPaymentDocument(data?: Data) {
+  m.get.mockImplementation(async (path: string) => {
+    if (path === 'admins/admin-1') return { data: () => m.profile };
+    if (path === 'communities/community-1')
+      return { data: () => ({ name: 'Green Valley', slug: 'green-valley', isActive: true }) };
+    if (path.startsWith('communityPaymentConfigs/'))
+      return { exists: () => data !== undefined, data: () => data };
+    return { data: () => m.profile };
+  });
+}
+
+describe('community payment config actions', () => {
+  it('returns a safe disabled representation when the config document is missing', async () => {
+    mockPaymentDocument();
+    const config = await getCommunityPaymentConfig(adminPaymentSession());
+    expect(config).toMatchObject({
+      communityId: 'community-1',
+      version: 1,
+      directUpi: { enabled: false },
+      updatedAt: null,
+      configured: false,
+    });
+    expect(m.get.mock.calls.map(([path]) => path)).toEqual([
+      'admins/admin-1',
+      'communities/community-1',
+      'communityPaymentConfigs/community-1',
+    ]);
+  });
+
+  it('parses enabled config and trims destination values', () => {
+    const config = parseCommunityPaymentConfig('community-1', storedPaymentConfig());
+    expect(config).toMatchObject({
+      communityId: 'community-1',
+      directUpi: {
+        enabled: true,
+        vpa: 'association@upi-bank',
+        payeeName: 'Green Valley Association',
+      },
+      updatedBy: 'admin-1',
+      configured: true,
+    });
+    expect(config.updatedAt).toEqual(new Date('2026-01-02T03:04:05Z'));
+  });
+
+  it('never exposes stale destination data for a disabled config', async () => {
+    mockPaymentDocument(
+      storedPaymentConfig({ enabled: false, vpa: 'stale@upi', payeeName: 'Old name' }),
+    );
+    const config = await getCommunityPaymentConfig(adminPaymentSession());
+    expect(config.directUpi).toEqual({ enabled: false });
+  });
+
+  it.each([
+    { version: 2 },
+    { communityId: 'community-2' },
+    { directUpi: { enabled: true, vpa: 'missing-handle', payeeName: 'Association' } },
+    { directUpi: { enabled: true, vpa: 'a@@b', payeeName: 'Association' } },
+    { directUpi: { enabled: true, vpa: 'a@b', payeeName: '  ' } },
+    { updatedBy: '  ' },
+    { updatedAt: 'not a timestamp' },
+  ])('rejects malformed stored configuration %#', (override) => {
+    expect(() =>
+      parseCommunityPaymentConfig('community-1', {
+        ...storedPaymentConfig(),
+        ...override,
+      }),
+    ).toThrow('Payment configuration is invalid.');
+  });
+
+  it('revalidates authority before reading the payment config', async () => {
+    await expect(getCommunityPaymentConfig(makeSession('resident'))).rejects.toThrow(
+      'An administrator is required.',
+    );
+    expect(m.get.mock.calls.map(([path]) => path)).toEqual([
+      'users/resident-1',
+      'communities/community-1',
+    ]);
+  });
+
+  it('builds enabled and disabled payloads without stale disabled fields', () => {
+    expect(
+      communityPaymentConfigPayload({
+        enabled: true,
+        vpa: ' assoc@upi ',
+        payeeName: ' Green Valley ',
+      }),
+    ).toEqual({
+      directUpi: { enabled: true, vpa: 'assoc@upi', payeeName: 'Green Valley' },
+    });
+    expect(
+      communityPaymentConfigPayload({
+        enabled: false,
+        vpa: 'stale@upi',
+        payeeName: 'Stale Name',
+      }),
+    ).toEqual({ directUpi: { enabled: false } });
+    expect(() => communityPaymentConfigPayload({ enabled: true, vpa: 'a@b' })).toThrow(
+      'A VPA and payee name are required',
+    );
+  });
+
+  it('does not allow a resident to update payment config', async () => {
+    await expect(
+      updateCommunityPaymentConfig(makeSession('resident'), { enabled: false }),
+    ).rejects.toThrow('An administrator is required.');
+    expect(m.call).not.toHaveBeenCalled();
+    expect(m.get.mock.calls.map(([path]) => path)).toEqual([
+      'users/resident-1',
+      'communities/community-1',
+    ]);
+  });
+
+  it('does not allow an Admin whose community access was revoked to update', async () => {
+    const session = adminPaymentSession();
+    m.profile = { ...adminData, authorizedCommunityIds: ['community-2'] };
+    await expect(updateCommunityPaymentConfig(session, { enabled: false })).rejects.toThrow(
+      'Community access revoked.',
+    );
+    expect(m.call).not.toHaveBeenCalled();
+    expect(m.get.mock.calls.map(([path]) => path)).toEqual([
+      'admins/admin-1',
+      'communities/community-1',
+    ]);
+  });
+
+  it('sends trimmed enabled values for the revalidated selected community', async () => {
+    mockPaymentDocument(
+      storedPaymentConfig({
+        enabled: true,
+        vpa: 'server@upi-bank',
+        payeeName: 'Server Association',
+      }),
+    );
+    await updateCommunityPaymentConfig(adminPaymentSession(), {
+      enabled: true,
+      vpa: ' submitted@upi-bank ',
+      payeeName: ' Submitted Name ',
+    });
+    expect(m.call).toHaveBeenCalledExactlyOnceWith('updateCommunityPaymentConfig', {
+      communityId: 'community-1',
+      directUpi: {
+        enabled: true,
+        vpa: 'submitted@upi-bank',
+        payeeName: 'Submitted Name',
+      },
+    });
+    expect(m.get.mock.calls.map(([path]) => path)).toEqual([
+      'admins/admin-1',
+      'communities/community-1',
+      'communityPaymentConfigs/community-1',
+    ]);
+  });
+
+  it('sends exactly the disabled payload without destination fields', async () => {
+    mockPaymentDocument(storedPaymentConfig({ enabled: false }));
+    await updateCommunityPaymentConfig(adminPaymentSession(), {
+      enabled: false,
+      vpa: 'stale@upi',
+      payeeName: 'Stale Name',
+    });
+    expect(m.call).toHaveBeenCalledExactlyOnceWith('updateCommunityPaymentConfig', {
+      communityId: 'community-1',
+      directUpi: { enabled: false },
+    });
+    expect(m.call.mock.calls[0][1]).not.toHaveProperty('vpa');
+    expect(m.call.mock.calls[0][1]).not.toHaveProperty('payeeName');
+  });
+
+  it('ignores caller-supplied community IDs and returns the authoritative reread', async () => {
+    mockPaymentDocument(
+      storedPaymentConfig({
+        enabled: true,
+        vpa: 'server@upi-bank',
+        payeeName: 'Server Association',
+      }),
+    );
+    const input = {
+      enabled: true,
+      vpa: 'client@upi-bank',
+      payeeName: 'Client Association',
+      communityId: 'community-2',
+    } as unknown as Parameters<typeof updateCommunityPaymentConfig>[1];
+    const config = await updateCommunityPaymentConfig(adminPaymentSession(), input);
+    expect(m.call.mock.calls[0][1]).toMatchObject({ communityId: 'community-1' });
+    expect(config.directUpi).toEqual({
+      enabled: true,
+      vpa: 'server@upi-bank',
+      payeeName: 'Server Association',
+    });
+    expect(m.get.mock.calls.at(-1)?.[0]).toBe('communityPaymentConfigs/community-1');
+  });
 });
 it('creates complaints with canonical ownership and pending status', async () => {
   await createComplaint(makeSession(), {

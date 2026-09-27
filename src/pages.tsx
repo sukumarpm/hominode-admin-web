@@ -35,6 +35,11 @@ import {
 import { AdminCreateButtons, ResidentReview } from './AdminTools';
 import { BillingCreateModal } from './BillingCreateModal';
 import { CommunityPaymentSettings } from './CommunityPaymentSettings';
+import {
+  paymentMethodLabel,
+  paymentReference,
+  PaymentReviewSection,
+} from './components/PaymentReview';
 import { Card, Modal, Pill, State } from './components';
 import { PhoneNumberInput } from './components/PhoneNumberInput';
 import { safeUrl, titleOf, useRows, type Module } from './data';
@@ -911,17 +916,20 @@ function ScopedModule({
                 <thead>
                   <tr>
                     <th scope="col">
-                      {module === 'residents'
-                        ? 'Resident'
-                        : module === 'visitors'
-                          ? 'Visitor'
-                          : 'Name / Reference'}
+                      {module === 'payments'
+                        ? 'Payment / Bill reference'
+                        : module === 'residents'
+                          ? 'Resident'
+                          : module === 'visitors'
+                            ? 'Visitor'
+                            : 'Name / Reference'}
                     </th>
                     <th scope="col">
                       {['billing', 'payments'].includes(module) ? 'Amount' : 'Details'}
                     </th>
+                    {module === 'payments' && <th scope="col">Method</th>}
                     <th scope="col">Status</th>
-                    <th scope="col">Last updated</th>
+                    <th scope="col">{module === 'payments' ? 'Submitted' : 'Last updated'}</th>
                     <th scope="col">
                       <span className="sr-only">Actions</span>
                     </th>
@@ -931,9 +939,17 @@ function ScopedModule({
                   {rows.slice(currentPage * 12, currentPage * 12 + 12).map((row) => (
                     <tr key={row.id}>
                       <th scope="row">
-                        <strong>{titleOf(row.data)}</strong>
+                        <strong>
+                          {module === 'payments'
+                            ? paymentReference(row.data, row.id)
+                            : titleOf(row.data)}
+                        </strong>
                         <small>
-                          {first(row.data, ['phoneNumber', 'email', 'flatLabel'], row.id)}
+                          {module === 'payments'
+                            ? str(row.data.billId)
+                              ? `Bill ${str(row.data.billId)} · Payment ${row.id}`
+                              : `Payment ${row.id}`
+                            : first(row.data, ['phoneNumber', 'email', 'flatLabel'], row.id)}
                         </small>
                       </th>
                       <td>
@@ -945,10 +961,15 @@ function ScopedModule({
                               '—',
                             )}
                       </td>
+                      {module === 'payments' && <td>{paymentMethodLabel(row.data.method)}</td>}
                       <td>
                         <Pill value={moduleStatus(module, row.data)} />
                       </td>
-                      <td>{dateLabel(row.data.updatedAt ?? row.data.createdAt)}</td>
+                      <td>
+                        {module === 'payments'
+                          ? dateLabel(row.data.paymentDate ?? row.data.createdAt ?? row.data.submittedAt)
+                          : dateLabel(row.data.updatedAt ?? row.data.createdAt)}
+                      </td>
                       <td>
                         <button
                           className="text-button"
@@ -1802,7 +1823,6 @@ function RecordDetails({
   );
   const [busy, setBusy] = useState(false),
     [message, setMessage] = useState(''),
-    [reason, setReason] = useState(''),
     [receipt, setReceipt] = useState('');
   useEffect(
     () => () => {
@@ -1854,9 +1874,47 @@ function RecordDetails({
       />
     );
   return (
-    <Modal title={titleOf(d)} onClose={onClose}>
+    <Modal
+        title={
+          module === 'payments'
+            ? `Payment proof · ${paymentReference(d, row.id)}`
+            : titleOf(d)
+        }
+        onClose={onClose}
+      >
       {module === 'events' ? (
         <EventDetailView data={d} title={titleOf(d)} />
+      ) : module === 'payments' ? (
+        <>
+          <Pill value={moduleStatus(module, d)} />
+          <PaymentReviewSection
+            data={d}
+            canReview={s.role === 'admin'}
+            busy={busy}
+            receipt={receipt}
+            onViewReceipt={() =>
+              void perform(async () => {
+                const blob = await receiptBlob(s, str(d.receiptPath));
+                setReceipt(URL.createObjectURL(blob));
+              })
+            }
+            onVerify={() =>
+              void perform(async () => {
+                await currentAuthority(s);
+                return call('verifyPaymentProof', { paymentId: row.id });
+              })
+            }
+            onReject={(rejectionReason) =>
+              void perform(async () => {
+                await currentAuthority(s);
+                return call('rejectPaymentProof', {
+                  paymentId: row.id,
+                  rejectionReason,
+                });
+              })
+            }
+          />
+        </>
       ) : (
         <>
           {module === 'facilities' && (
@@ -2093,52 +2151,6 @@ function RecordDetails({
                 }}
               />
             </label>
-          )}
-          {module === 'payments' && str(d.receiptPath) && (
-            <button
-              onClick={() =>
-                void perform(async () => {
-                  const blob = await receiptBlob(s, str(d.receiptPath));
-                  setReceipt(URL.createObjectURL(blob));
-                })
-              }
-            >
-              View receipt
-            </button>
-          )}
-          {receipt && <img className="receipt-image" src={receipt} alt="Payment receipt" />}
-          {module === 'payments' && s.role === 'admin' && d.status === 'pending' && (
-            <>
-              <button
-                className="primary"
-                onClick={() =>
-                  void perform(async () => {
-                    await currentAuthority(s);
-                    return call('verifyPaymentProof', { paymentId: row.id });
-                  })
-                }
-              >
-                Verify payment
-              </button>
-              <label>
-                Rejection reason
-                <textarea value={reason} onChange={(e) => setReason(e.target.value)} />
-              </label>
-              <button
-                disabled={!reason.trim() || busy}
-                onClick={() =>
-                  void perform(async () => {
-                    await currentAuthority(s);
-                    return call('rejectPaymentProof', {
-                      paymentId: row.id,
-                      rejectionReason: reason.trim(),
-                    });
-                  })
-                }
-              >
-                Reject proof
-              </button>
-            </>
           )}
         </fieldset>
       </div>

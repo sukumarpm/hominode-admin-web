@@ -15,6 +15,8 @@ import { deleteObject, getBlob, getDownloadURL, ref, uploadBytes } from 'firebas
 import { call, firebase } from './firebase';
 import {
   type CreateFacilityInput,
+  type CommunityPaymentConfig,
+  type CommunityPaymentConfigInput,
   type Data,
   type FacilityImage,
   type FacilityPricingMode,
@@ -286,6 +288,137 @@ export async function currentAuthority(s: Session) {
     throw Error('Community access revoked.');
   return { ...s, profile, community };
 }
+
+function requirePaymentAdmin(s: Session) {
+  if (s.role !== 'admin' || s.profile.role !== 'admin')
+    throw Error('An administrator is required.');
+  if (!s.community) throw Error('Select an authorized community.');
+  return s;
+}
+
+function paymentConfigDate(value: unknown): Date | null {
+  let date: Date | null = null;
+  if (value instanceof Date) date = value;
+  else if (value && typeof value === 'object' && 'toDate' in value) {
+    const toDate = (value as { toDate?: unknown }).toDate;
+    if (typeof toDate === 'function') {
+      try {
+        const result: unknown = toDate.call(value);
+        if (result instanceof Date) date = result;
+      } catch {
+        date = null;
+      }
+    }
+  }
+  return date && Number.isFinite(date.getTime()) ? date : null;
+}
+
+/** Parse one stored payment config without ever exposing stale disabled destinations. */
+export function parseCommunityPaymentConfig(
+  communityId: string,
+  data: Data,
+): CommunityPaymentConfig {
+  if (
+    !communityId ||
+    data.communityId !== communityId ||
+    data.version !== 1 ||
+    !data.directUpi ||
+    typeof data.directUpi !== 'object' ||
+    Array.isArray(data.directUpi)
+  )
+    throw Error('Payment configuration is invalid.');
+
+  const directUpi = data.directUpi as Data;
+  if (typeof directUpi.enabled !== 'boolean') throw Error('Payment configuration is invalid.');
+
+  const updatedBy = typeof data.updatedBy === 'string' ? data.updatedBy.trim() : '';
+  const updatedAt = paymentConfigDate(data.updatedAt);
+  if (!updatedBy || !updatedAt) throw Error('Payment configuration is invalid.');
+
+  if (!directUpi.enabled) {
+    return {
+      communityId,
+      version: 1,
+      directUpi: { enabled: false },
+      updatedBy,
+      updatedAt,
+      configured: true,
+    };
+  }
+
+  const vpa = typeof directUpi.vpa === 'string' ? directUpi.vpa.trim() : '';
+  const payeeName = typeof directUpi.payeeName === 'string' ? directUpi.payeeName.trim() : '';
+  const parts = vpa.split('@');
+  if (!vpa || /\s/.test(vpa) || parts.length !== 2 || !parts[0] || !parts[1] || !payeeName)
+    throw Error('Payment configuration is invalid.');
+
+  return {
+    communityId,
+    version: 1,
+    directUpi: { enabled: true, vpa, payeeName },
+    updatedBy,
+    updatedAt,
+    configured: true,
+  };
+}
+
+export function communityPaymentConfigPayload(input: CommunityPaymentConfigInput) {
+  if (!input || typeof input.enabled !== 'boolean')
+    throw Error('A valid Direct UPI configuration is required.');
+  if (!input.enabled) return { directUpi: { enabled: false as const } };
+
+  const vpa = typeof input.vpa === 'string' ? input.vpa.trim() : '';
+  const payeeName = typeof input.payeeName === 'string' ? input.payeeName.trim() : '';
+  if (!vpa || !payeeName)
+    throw Error('A VPA and payee name are required when Direct UPI is enabled.');
+  return { directUpi: { enabled: true as const, vpa, payeeName } };
+}
+
+async function readCommunityPaymentConfig(s: Session): Promise<CommunityPaymentConfig> {
+  const communityId = s.community!.id;
+  try {
+    const snapshot = await getDocFromServer(
+      doc(firebase().db, 'communityPaymentConfigs', communityId),
+    );
+    if (!snapshot.exists()) {
+      return {
+        communityId,
+        version: 1,
+        directUpi: { enabled: false },
+        updatedAt: null,
+        configured: false,
+      };
+    }
+    return parseCommunityPaymentConfig(communityId, snapshot.data() as Data);
+  } catch (error) {
+    if (error instanceof Error && error.message === 'Payment configuration is invalid.')
+      throw error;
+    throw Error('Payment settings could not be loaded.');
+  }
+}
+
+export async function getCommunityPaymentConfig(session: Session): Promise<CommunityPaymentConfig> {
+  const s = requirePaymentAdmin(await currentAuthority(session));
+  return readCommunityPaymentConfig(s);
+}
+
+export async function updateCommunityPaymentConfig(
+  session: Session,
+  input: CommunityPaymentConfigInput,
+): Promise<CommunityPaymentConfig> {
+  const s = requirePaymentAdmin(await currentAuthority(session));
+  const payload = communityPaymentConfigPayload(input);
+  try {
+    await call('updateCommunityPaymentConfig', {
+      communityId: s.community!.id,
+      ...payload,
+    });
+  } catch {
+    throw Error('Community payment settings could not be updated.');
+  }
+  return readCommunityPaymentConfig(s);
+}
+
 function required(v: string, label: string) {
   if (!v.trim()) throw Error(label + ' is required.');
   return v.trim();

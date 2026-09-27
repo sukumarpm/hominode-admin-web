@@ -8,6 +8,28 @@ export interface Community {
   ownerIdentityVerificationRequired: boolean;
   data: Data;
 }
+
+export interface DirectUpiConfig {
+  enabled: boolean;
+  vpa?: string;
+  payeeName?: string;
+}
+
+export interface CommunityPaymentConfig {
+  communityId: string;
+  version: 1;
+  directUpi: DirectUpiConfig;
+  updatedBy?: string;
+  updatedAt?: Date | null;
+  configured: boolean;
+}
+
+export interface CommunityPaymentConfigInput {
+  enabled: boolean;
+  vpa?: string;
+  payeeName?: string;
+}
+
 export interface Profile {
   uid: string;
   role: Role;

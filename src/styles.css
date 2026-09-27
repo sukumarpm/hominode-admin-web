@@ -1424,6 +1424,28 @@ tbody .text-button {
   line-height: 1.6;
 }
 
+.payment-review-section {
+  display: grid;
+  gap: 12px;
+}
+
+.payment-review-fields {
+  margin-top: 12px;
+}
+
+.payment-review-controls {
+  display: grid;
+  justify-items: start;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.payment-review-controls label {
+  display: grid;
+  gap: 7px;
+  width: min(100%, 520px);
+}
+
 .detail-actions {
   margin-top: 20px;
 }
@@ -1535,6 +1557,33 @@ dialog::backdrop {
 
 .settings-note h3 {
   margin: 20px 0 8px;
+}
+
+.community-payment-settings {
+  margin-top: 20px;
+}
+
+.community-payment-summary {
+  display: grid;
+  gap: 12px;
+}
+
+.community-payment-status {
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.community-payment-switch {
+  flex-direction: row;
+  align-items: center;
+}
+
+.community-payment-switch input {
+  width: 18px;
+  min-height: 18px;
+  height: 18px;
+  margin: 0;
+  padding: 0;
 }
 
 .sos-intro {
@@ -4624,7 +4673,6 @@ dialog:has(.facility-admin-form) > *:not(.dialog-heading) {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
-
 
 /* ==========================================================
    EVENT IMAGE UPLOAD

@@ -1446,6 +1446,84 @@ tbody .text-button {
   width: min(100%, 520px);
 }
 
+.record-payment-panel {
+  margin-top: 20px;
+}
+
+.record-payment-form {
+  display: grid;
+  gap: 14px;
+  margin-top: 14px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #f8fbff;
+}
+
+.record-payment-form h3 {
+  margin: 0;
+}
+
+.record-payment-form dl {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.record-payment-form dl > div {
+  display: grid;
+  grid-template-columns: minmax(100px, 0.4fr) 1fr;
+  gap: 12px;
+}
+
+.record-payment-form dt {
+  color: var(--muted);
+}
+
+.record-payment-form dd {
+  margin: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.record-payment-form fieldset {
+  display: grid;
+  gap: 13px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.record-payment-form fieldset > label:not(.record-payment-confirmation) {
+  display: grid;
+  gap: 7px;
+}
+
+.record-payment-form select,
+.record-payment-form input:not([type='checkbox']) {
+  width: 100%;
+}
+
+.record-payment-confirmation {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.record-payment-confirmation input {
+  width: 18px;
+  height: 18px;
+}
+
+.form-success {
+  padding: 12px;
+  border-radius: 10px;
+  color: #17663a;
+  background: #eaf8ef;
+  font-size: 12px;
+}
+
 .detail-actions {
   margin-top: 20px;
 }

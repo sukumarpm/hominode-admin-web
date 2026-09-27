@@ -7,6 +7,7 @@ import {
   deleteFacilityImage,
   getCommunityPaymentConfig,
   parseCommunityPaymentConfig,
+  recordOfflinePayment,
   updateCommunityPaymentConfig,
   communityPaymentConfigPayload,
   setFacilityAvailability,
@@ -117,6 +118,120 @@ function mockPaymentDocument(data?: Data) {
     return { data: () => m.profile };
   });
 }
+
+function mockOfflinePaymentBill(
+  data: Data = {
+    communityId: 'community-1',
+    status: 'pending',
+    amount: 1250,
+  },
+) {
+  m.get.mockImplementation(async (path: string) => {
+    if (path === 'admins/admin-1') return { data: () => m.profile };
+    if (path === 'communities/community-1')
+      return { data: () => ({ name: 'Green Valley', slug: 'green-valley', isActive: true }) };
+    if (path === 'bills/bill-1') return { exists: () => true, data: () => data };
+    return { exists: () => false, data: () => undefined };
+  });
+}
+
+describe('Admin offline payment action', () => {
+  it.each([
+    ['cash', 'cash'],
+    ['bank_transfer', 'bank_transfer'],
+    ['cheque', 'cheque'],
+  ] as const)(
+    'calls trusted settlement for %s only after authority and bill checks',
+    async (method, expected) => {
+      const session = adminPaymentSession();
+      mockOfflinePaymentBill();
+
+      await recordOfflinePayment(session, {
+        billId: 'bill-1',
+        paymentMethod: method,
+        paymentReference: '  RCPT-18  ',
+      });
+
+      expect(m.call).toHaveBeenCalledExactlyOnceWith('recordManualPayment', {
+        billId: 'bill-1',
+        paymentMethod: expected,
+        paymentReference: 'RCPT-18',
+      });
+      expect(m.get.mock.invocationCallOrder.at(-1)).toBeLessThan(
+        m.call.mock.invocationCallOrder[0],
+      );
+    },
+  );
+
+  it.each([
+    ['paid', { status: 'paid' }],
+    ['settlement ID', { status: 'pending', paymentId: 'payment-1' }],
+    ['paid timestamp', { status: 'overdue', paidAt: new Date() }],
+    ['non-zero paid amount', { status: 'overdue', paidAmount: 1250 }],
+    ['foreign community', { status: 'pending', communityId: 'community-2' }],
+  ])('does not call settlement for a bill with %s', async (_label, overrides) => {
+    const session = adminPaymentSession();
+    mockOfflinePaymentBill({ communityId: 'community-1', amount: 1250, ...overrides });
+
+    await expect(
+      recordOfflinePayment(session, {
+        billId: 'bill-1',
+        paymentMethod: 'cash',
+        paymentReference: '',
+      }),
+    ).rejects.toThrow();
+    expect(m.call).not.toHaveBeenCalled();
+  });
+
+  it('rejects an overlong reference before settlement', async () => {
+    const session = adminPaymentSession();
+    mockOfflinePaymentBill();
+
+    await expect(
+      recordOfflinePayment(session, {
+        billId: 'bill-1',
+        paymentMethod: 'cash',
+        paymentReference: 'x'.repeat(201),
+      }),
+    ).rejects.toThrow('200 characters or fewer');
+    expect(m.call).not.toHaveBeenCalled();
+  });
+
+  it('does not settle after current admin authority is revoked', async () => {
+    const session = adminPaymentSession();
+    m.profile = { ...adminData, authorizedCommunityIds: ['community-2'] };
+    mockOfflinePaymentBill();
+
+    await expect(
+      recordOfflinePayment(session, {
+        billId: 'bill-1',
+        paymentMethod: 'cash',
+        paymentReference: '',
+      }),
+    ).rejects.toThrow('Community access revoked');
+    expect(m.get).toHaveBeenCalledTimes(2);
+    expect(m.call).not.toHaveBeenCalled();
+  });
+
+  it('turns callable rejection into a safe bill-refresh message', async () => {
+    const session = adminPaymentSession();
+    mockOfflinePaymentBill();
+    m.call.mockRejectedValueOnce(Error('internal permission detail'));
+
+    await expect(
+      recordOfflinePayment(session, {
+        billId: 'bill-1',
+        paymentMethod: 'cash',
+        paymentReference: '',
+      }),
+    ).rejects.toThrow('Payment could not be recorded. Refresh the bill and try again.');
+    expect(m.call.mock.calls[0][1]).toEqual({
+      billId: 'bill-1',
+      paymentMethod: 'cash',
+      paymentReference: '',
+    });
+  });
+});
 
 describe('community payment config actions', () => {
   it('returns a safe disabled representation when the config document is missing', async () => {

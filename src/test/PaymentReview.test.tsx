@@ -75,7 +75,12 @@ it('renders legacy external proof without inventing Direct UPI metadata', () => 
 });
 
 it('shows Verify and Reject only for pending proofs, with receipt viewing when a path exists', () => {
-  const { rerender } = review({ status: 'pending', receiptPath: 'receipt/path.jpg' });
+  const { rerender } = review({
+    status: 'pending',
+    method: 'upi',
+    provider: 'direct_upi',
+    receiptPath: 'receipt/path.jpg',
+  });
   expect(screen.getByRole('button', { name: 'Verify payment' })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Reject proof' })).toBeDisabled();
   fireEvent.change(screen.getByLabelText('Rejection reason'), { target: { value: 'Unreadable' } });
@@ -102,10 +107,78 @@ it('shows Verify and Reject only for pending proofs, with receipt viewing when a
   }
 });
 
+it('shows Admin-attested cash completion without proof controls or invented provider data', () => {
+  review({
+    amount: 1250,
+    method: 'cash',
+    status: 'completed',
+    evidenceType: 'admin_attestation',
+    billId: 'bill-22',
+    flatId: 'flat-3',
+    residentId: 'resident-4',
+    paymentReference: 'CASH-204',
+    recordedAt: new Date('2026-09-02T12:00:00Z'),
+    settledBy: 'admin-private-uid',
+  });
+
+  expect(screen.getByText('Cash')).toBeInTheDocument();
+  expect(screen.getByText('Completed')).toBeInTheDocument();
+  expect(screen.getByText('Admin attestation')).toBeInTheDocument();
+  expect(screen.getByText('CASH-204')).toBeInTheDocument();
+  expect(screen.getByText('Recorded by Admin')).toBeInTheDocument();
+  expect(screen.getByText('Recorded')).toBeInTheDocument();
+  expect(screen.queryByText('Not specified')).not.toBeInTheDocument();
+  expect(screen.queryByText('admin-private-uid')).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'View receipt' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Verify payment' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Reject proof' })).not.toBeInTheDocument();
+});
+
+it('never offers proof-review controls for cash payments', () => {
+  review({ method: 'cash', status: 'pending' });
+  expect(screen.queryByRole('button', { name: 'Verify payment' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Reject proof' })).not.toBeInTheDocument();
+});
+
+it('shows completed UPI as Verified by Admin and keeps legacy methods readable', () => {
+  const { rerender } = review({ method: 'upi', status: 'completed' });
+  expect(screen.getByText('Verified by Admin')).toBeInTheDocument();
+
+  rerender(
+    <PaymentReviewSection
+      data={{ method: 'manual', status: 'completed' }}
+      canReview
+      busy={false}
+      receipt=""
+      onViewReceipt={noop}
+      onVerify={noop}
+      onReject={noop}
+    />,
+  );
+  expect(screen.getByText('Manual')).toBeInTheDocument();
+  expect(screen.getByText('Recorded by Admin')).toBeInTheDocument();
+
+  rerender(
+    <PaymentReviewSection
+      data={{ method: 'external', status: 'completed' }}
+      canReview
+      busy={false}
+      receipt=""
+      onViewReceipt={noop}
+      onVerify={noop}
+      onReject={noop}
+    />,
+  );
+  expect(screen.getByText('External')).toBeInTheDocument();
+});
+
 it('uses transaction id, bill id, then document id as the payment list reference', () => {
   expect(paymentReference({ transactionId: '  UTR-1  ', billId: 'bill-1' }, 'payment-1')).toBe(
     'UTR-1',
   );
   expect(paymentReference({ transactionId: null, billId: 'bill-1' }, 'payment-1')).toBe('bill-1');
+  expect(paymentReference({ transactionId: null, paymentReference: 'cash-ref' }, 'payment-1')).toBe(
+    'cash-ref',
+  );
   expect(paymentReference({ transactionId: '', billId: null }, 'payment-1')).toBe('payment-1');
 });

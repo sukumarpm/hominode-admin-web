@@ -35,6 +35,7 @@ export const adminNav: Navigation[] = [
   { path: 'community', label: 'Community', icon: Building2 },
   { path: 'buildings', label: 'Buildings & Units', icon: Building2 },
   { path: 'billing', label: 'Billing', icon: WalletCards },
+  { path: 'payments', label: 'Payments', icon: WalletCards },
   { path: 'events', label: 'Events', icon: Megaphone },
   { path: 'parking', label: 'Parking', icon: ParkingCircle },
   { path: 'resident-vehicles', label: 'Resident Vehicles', icon: Car },

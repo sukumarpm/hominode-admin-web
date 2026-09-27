@@ -419,6 +419,55 @@ export async function updateCommunityPaymentConfig(
   return readCommunityPaymentConfig(s);
 }
 
+export type OfflinePaymentMethod = 'cash' | 'bank_transfer' | 'cheque';
+
+/** Record an Admin-attested offline payment through the trusted settlement callable. */
+export async function recordOfflinePayment(
+  session: Session,
+  input: {
+    billId: string;
+    paymentMethod: OfflinePaymentMethod;
+    paymentReference: string;
+  },
+) {
+  const s = requirePaymentAdmin(await currentAuthority(session));
+  const billId = input.billId.trim();
+  const paymentReference = input.paymentReference.trim();
+
+  if (!billId || billId.includes('/')) throw Error('A valid bill is required.');
+  if (!['cash', 'bank_transfer', 'cheque'].includes(input.paymentMethod))
+    throw Error('Choose Cash, Bank Transfer, or Cheque.');
+  if (paymentReference.length > 200)
+    throw Error('The reference must be 200 characters or fewer.');
+
+  const billSnapshot = await getDocFromServer(doc(firebase().db, 'bills', billId));
+  const bill = billSnapshot.data();
+  const billStatus = str(bill?.status).toLowerCase();
+  if (
+    !billSnapshot.exists() ||
+    !bill ||
+    bill.communityId !== s.community!.id ||
+    !['pending', 'overdue'].includes(billStatus) ||
+    bill.paymentId != null ||
+    bill.paidAt != null ||
+    (typeof bill.paidAmount === 'number' && bill.paidAmount !== 0)
+  ) {
+    throw Error(
+      'This bill is already settled or is not available for payment. Refresh and try again.',
+    );
+  }
+
+  try {
+    return await call('recordManualPayment', {
+      billId,
+      paymentMethod: input.paymentMethod,
+      paymentReference,
+    });
+  } catch {
+    throw Error('Payment could not be recorded. Refresh the bill and try again.');
+  }
+}
+
 function required(v: string, label: string) {
   if (!v.trim()) throw Error(label + ' is required.');
   return v.trim();

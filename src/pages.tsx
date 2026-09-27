@@ -36,10 +36,12 @@ import { AdminCreateButtons, ResidentReview } from './AdminTools';
 import { BillingCreateModal } from './BillingCreateModal';
 import { CommunityPaymentSettings } from './CommunityPaymentSettings';
 import {
+  paymentAttributionLabel,
   paymentMethodLabel,
   paymentReference,
   PaymentReviewSection,
 } from './components/PaymentReview';
+import { RecordPaymentPanel } from './components/RecordPaymentPanel';
 import { Card, Modal, Pill, State } from './components';
 import { PhoneNumberInput } from './components/PhoneNumberInput';
 import { safeUrl, titleOf, useRows, type Module } from './data';
@@ -68,7 +70,7 @@ export const labels: Record<Module, string> = {
   facilities: 'Facilities',
   bookings: 'Bookings',
   billing: 'Bills & Payments',
-  payments: 'Payment Proofs',
+  payments: 'Payments',
   notices: 'Notices',
   events: 'Events',
   documents: 'Documents',
@@ -82,12 +84,18 @@ export const labels: Record<Module, string> = {
   communities: 'Communities',
   admins: 'Administrators',
 };
+function paymentMethodWithAttribution(value: unknown) {
+  const method = paymentMethodLabel(value);
+  const attribution = paymentAttributionLabel(value);
+  return attribution ? `${method} · ${attribution}` : method;
+}
 const descriptions: Partial<Record<Module, string>> = {
   residents: 'The people who make your community home.',
   visitors: 'A warm welcome, with peace of mind.',
   complaints: 'Follow every request from report to resolution.',
   facilities: 'Spaces to connect, unwind and enjoy.',
   billing: 'A clear view of your community payments.',
+  payments: 'Resident payment proofs and Admin-recorded settlements.',
   notices: 'Stay connected to what’s happening around you.',
   buildings: 'Your community, building by building.',
   notifications: 'Updates that matter to you.',
@@ -475,6 +483,9 @@ function ScopedModule({
     close();
     setRevision((value) => value + 1);
   }
+  function paymentRecorded() {
+    setRevision((value) => value + 1);
+  }
   return (
     <>
       <header className="page-header">
@@ -487,7 +498,7 @@ function ScopedModule({
           <AdminCreateButtons s={s} module={module} />
           {module === 'billing' && (
             <Link className="outline-link" to={base + 'payments'}>
-              Payment proofs <ArrowRight size={16} />
+              Payments <ArrowRight size={16} />
             </Link>
           )}
           {module === 'buildings' && (
@@ -928,8 +939,9 @@ function ScopedModule({
                       {['billing', 'payments'].includes(module) ? 'Amount' : 'Details'}
                     </th>
                     {module === 'payments' && <th scope="col">Method</th>}
+                    {module === 'billing' && <th scope="col">Payment</th>}
                     <th scope="col">Status</th>
-                    <th scope="col">{module === 'payments' ? 'Submitted' : 'Last updated'}</th>
+                    <th scope="col">{module === 'payments' ? 'Date' : 'Last updated'}</th>
                     <th scope="col">
                       <span className="sr-only">Actions</span>
                     </th>
@@ -961,13 +973,36 @@ function ScopedModule({
                               '—',
                             )}
                       </td>
-                      {module === 'payments' && <td>{paymentMethodLabel(row.data.method)}</td>}
+                      {module === 'payments' && (
+                        <td>
+                          <span>{paymentMethodLabel(row.data.method ?? row.data.paymentMethod)}</span>
+                          {str(row.data.status).toLowerCase() === 'completed' &&
+                            paymentAttributionLabel(row.data.method ?? row.data.paymentMethod) && (
+                              <small>
+                                {paymentAttributionLabel(row.data.method ?? row.data.paymentMethod)}
+                              </small>
+                            )}
+                        </td>
+                      )}
+                      {module === 'billing' && (
+                        <td>
+                          {str(row.data.status).toLowerCase() === 'paid' && str(row.data.paymentMethod)
+                            ? paymentMethodWithAttribution(row.data.paymentMethod)
+                            : '—'}
+                        </td>
+                      )}
                       <td>
                         <Pill value={moduleStatus(module, row.data)} />
                       </td>
                       <td>
                         {module === 'payments'
-                          ? dateLabel(row.data.paymentDate ?? row.data.createdAt ?? row.data.submittedAt)
+                          ? dateLabel(
+                              row.data.recordedAt ??
+                                row.data.paidAt ??
+                                row.data.paymentDate ??
+                                row.data.createdAt ??
+                                row.data.submittedAt,
+                            )
                           : dateLabel(row.data.updatedAt ?? row.data.createdAt)}
                       </td>
                       <td>
@@ -1014,6 +1049,7 @@ function ScopedModule({
           row={selected}
           onClose={close}
           onFacilitySaved={facilitySaved}
+          onPaymentRecorded={paymentRecorded}
           startEditing={params.get('edit') === '1'}
         />
       )}{' '}
@@ -1806,6 +1842,7 @@ function RecordDetails({
   row,
   onClose,
   onFacilitySaved,
+  onPaymentRecorded,
   startEditing = false,
 }: {
   s: Session;
@@ -1813,6 +1850,7 @@ function RecordDetails({
   row: Row;
   onClose: () => void;
   onFacilitySaved: () => void;
+  onPaymentRecorded: () => void;
   startEditing?: boolean;
 }) {
   const [editingFacility, setEditingFacility] = useState(
@@ -1877,7 +1915,7 @@ function RecordDetails({
     <Modal
         title={
           module === 'payments'
-            ? `Payment proof · ${paymentReference(d, row.id)}`
+            ? `Payment · ${paymentReference(d, row.id)}`
             : titleOf(d)
         }
         onClose={onClose}
@@ -1925,9 +1963,42 @@ function RecordDetails({
             data={
               module === 'facilities'
                 ? { ...d, status: undefined, pricePerDay: undefined }
-                : d
+              : d
             }
           />
+          {module === 'billing' && str(d.status).toLowerCase() === 'paid' && (
+            <dl className="detail-fields payment-settlement-fields">
+              <div>
+                <dt>Payment status</dt>
+                <dd>Paid</dd>
+              </div>
+              {str(d.paymentMethod) && (
+                <div>
+                  <dt>Paid via</dt>
+                  <dd>{paymentMethodLabel(d.paymentMethod)}</dd>
+                </div>
+              )}
+              {(str(d.paymentReference) || str(d.transactionId)) && (
+                <div>
+                  <dt>Payment reference</dt>
+                  <dd>{str(d.paymentReference) || str(d.transactionId)}</dd>
+                </div>
+              )}
+              <div>
+                <dt>Paid on</dt>
+                <dd>{dateLabel(d.paidAt)}</dd>
+              </div>
+              {paymentAttributionLabel(d.paymentMethod) && (
+                <div>
+                  <dt>Settlement</dt>
+                  <dd>{paymentAttributionLabel(d.paymentMethod)}</dd>
+                </div>
+              )}
+            </dl>
+          )}
+          {module === 'billing' && s.role === 'admin' && (
+            <RecordPaymentPanel session={s} bill={row} onRecorded={onPaymentRecorded} />
+          )}
         </>
       )}
       {module === 'facilities' && (

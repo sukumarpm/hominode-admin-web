@@ -11,7 +11,7 @@ function formattedValue(value: unknown): string {
 }
 
 export function paymentReference(data: Data, paymentId: string): string {
-  return first(data, ['transactionId', 'billId'], paymentId);
+  return first(data, ['transactionId', 'paymentReference', 'billId'], paymentId);
 }
 
 export function paymentMethodLabel(value: unknown): string {
@@ -21,32 +21,59 @@ export function paymentMethodLabel(value: unknown): string {
   return formattedValue(value);
 }
 
-function providerLabel(value: unknown): string {
+export function paymentAttributionLabel(value: unknown): string {
+  const method = str(value).toLowerCase();
+  if (method === 'upi') return 'Verified by Admin';
+  if (['cash', 'bank_transfer', 'cheque', 'manual'].includes(method)) return 'Recorded by Admin';
+  return '';
+}
+
+function providerLabel(value: unknown, isAdminAttestation: boolean): string {
   if (str(value).toLowerCase() === 'direct_upi') return 'Direct UPI';
+  if (!str(value) && isAdminAttestation) return '';
   return formattedValue(value);
 }
 
 export function PaymentReviewDetails({ data }: { data: Data }) {
+  const method = data.method ?? data.paymentMethod;
+  const isAdminAttestation = str(data.evidenceType).toLowerCase() === 'admin_attestation';
+  const provider = providerLabel(data.provider, isAdminAttestation);
   const paymentAmount =
     typeof data.amount === 'number' && Number.isFinite(data.amount)
       ? money(data.amount)
       : 'Not specified';
-  const submitted = dateLabel(data.paymentDate ?? data.createdAt ?? data.submittedAt);
+  const submitted = dateLabel(
+    data.recordedAt ?? data.paidAt ?? data.paymentDate ?? data.createdAt ?? data.submittedAt,
+  );
   const values: [string, string][] = [
     ['Amount', paymentAmount],
-    ['Payment method', paymentMethodLabel(data.method)],
-    ['Provider', providerLabel(data.provider)],
-    ['Verification', formattedValue(data.verificationMode)],
-    ['Evidence', formattedValue(data.evidenceType)],
-    ['Transaction / Reference No.', str(data.transactionId) || 'Not provided'],
+    ['Payment method', paymentMethodLabel(method)],
+    ...(provider ? ([['Provider', provider]] as [string, string][]) : []),
+    ['Verification', isAdminAttestation ? 'Not applicable' : formattedValue(data.verificationMode)],
+    [
+      'Evidence',
+      str(data.evidenceType).toLowerCase() === 'admin_attestation'
+        ? 'Admin attestation'
+        : formattedValue(data.evidenceType),
+    ],
+    [
+      'Transaction / Reference No.',
+      str(data.transactionId) || str(data.paymentReference) || 'Not provided',
+    ],
     ['Bill reference', str(data.billId) || 'Not specified'],
     ['Unit / flat reference', first(data, ['flatLabel', 'flatId']) || 'Not specified'],
     [
       'Resident reference',
       first(data, ['residentName', 'userName', 'residentId', 'userId']) || 'Not specified',
     ],
-    ['Submitted', submitted === '—' ? 'Not specified' : submitted],
+    [
+      isAdminAttestation ? 'Recorded' : 'Submitted',
+      submitted === '—' ? 'Not specified' : submitted,
+    ],
     ['Status', formattedValue(data.status)],
+    ...(str(data.status).toLowerCase() === 'completed' && paymentAttributionLabel(method)
+      ? ([['Settlement attribution', paymentAttributionLabel(method)]] as [string, string][])
+      : []),
   ];
 
   return (
@@ -80,6 +107,10 @@ export function PaymentReviewSection({
 }) {
   const [reason, setReason] = useState('');
   const isPending = str(data.status) === 'pending';
+  const paymentMethod = str(data.method ?? data.paymentMethod).toLowerCase();
+  const isAdminAttestedMethod = ['cash', 'bank_transfer', 'cheque', 'manual'].includes(
+    paymentMethod,
+  );
   const hasReceipt = !!str(data.receiptPath);
 
   return (
@@ -91,7 +122,7 @@ export function PaymentReviewSection({
         </button>
       )}
       {receipt && <img className="receipt-image" src={receipt} alt="Payment receipt" />}
-      {canReview && isPending && (
+      {canReview && isPending && !isAdminAttestedMethod && (
         <div className="payment-review-controls">
           <button type="button" className="primary" onClick={onVerify} disabled={busy}>
             Verify payment

@@ -51,6 +51,15 @@ function mount(url = path('visitors'), overrides: Partial<AuthState> = {}) {
 }
 beforeEach(() => vi.clearAllMocks());
 describe('protected nested routes', () => {
+  if (APP_ROLE === 'admin')
+    it('uses Payments terminology on the existing payments route', async () => {
+      mount('/payments');
+      expect(
+        await screen.findByRole('heading', { name: 'Payments', level: 1 }),
+      ).toBeInTheDocument();
+      expect(screen.getAllByRole('link', { name: 'Payments' }).length).toBeGreaterThan(0);
+    });
+
   it('renders direct deep links after tenant resolution', async () => {
     mount();
     expect(await screen.findByRole('heading', { name: 'Visitors', level: 1 })).toBeInTheDocument();

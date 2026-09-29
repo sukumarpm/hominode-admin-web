@@ -119,6 +119,7 @@ export interface BillDocument {
   amount: number;
   status: string;
 }
+export type V2BillClassification = 'current' | 'history' | 'unavailable';
 export interface SosDocument {
   communityId: string;
   residentUid: string;
@@ -156,6 +157,61 @@ export const money = (value: number) =>
     currency: 'INR',
     maximumFractionDigits: 2,
   }).format(value);
+
+/** V2 is opt-in only when Firestore stores the numeric schema version. */
+export function isV2Bill(data: Data): boolean {
+  return data.schemaVersion === 2;
+}
+
+function safeMinor(value: unknown, allowZero: boolean): value is number {
+  return (
+    typeof value === 'number' && Number.isSafeInteger(value) && (allowZero ? value >= 0 : value > 0)
+  );
+}
+
+export function hasValidV2BillFinancials(data: Data): boolean {
+  if (!isV2Bill(data) || data.currency !== 'INR') return false;
+  const { amountMinor, paidAmountMinor, creditAppliedMinor, outstandingAmountMinor } = data;
+  if (
+    !safeMinor(amountMinor, false) ||
+    !safeMinor(paidAmountMinor, true) ||
+    !safeMinor(creditAppliedMinor, true) ||
+    !safeMinor(outstandingAmountMinor, true) ||
+    paidAmountMinor > amountMinor ||
+    creditAppliedMinor > amountMinor - paidAmountMinor ||
+    outstandingAmountMinor !== amountMinor - paidAmountMinor - creditAppliedMinor ||
+    typeof data.currentRevisionId !== 'string' ||
+    !data.currentRevisionId.trim()
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/** Formats paise by integer division and string assembly, without rupee floats. */
+export function formatInrMinorUnits(value: unknown): string {
+  if (!safeMinor(value, true)) return '—';
+  const digits = String(value).padStart(3, '0');
+  const rupeeDigits = digits.slice(0, -2);
+  const paise = digits.slice(-2);
+  const lastThreeRupees = rupeeDigits.slice(-3);
+  const leadingRupees = rupeeDigits.slice(0, -3);
+  const groups: string[] = [];
+  for (let end = leadingRupees.length; end > 0; end -= 2) {
+    groups.unshift(leadingRupees.slice(Math.max(0, end - 2), end));
+  }
+  const groupedRupees = [...groups, lastThreeRupees].filter(Boolean).join(',');
+  return `₹${groupedRupees}.${paise}`;
+}
+
+export function classifyV2Bill(data: Data): V2BillClassification {
+  if (!hasValidV2BillFinancials(data)) return 'unavailable';
+  const billStatus = typeof data.status === 'string' ? data.status.trim().toLowerCase() : '';
+  if (data.outstandingAmountMinor === 0) return 'history';
+  if (['pending', 'overdue', 'partially_paid'].includes(billStatus)) return 'current';
+  return 'unavailable';
+}
+
 export function amount(d: Data): number {
   for (const k of ['amount', 'totalAmount', 'billAmount', 'total', 'dueAmount']) {
     const v = d[k];

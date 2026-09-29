@@ -49,9 +49,13 @@ import { FacilityActions, FacilityForm } from './FacilityForm';
 import { call } from './firebase';
 import {
   amount,
+  classifyV2Bill,
   dateLabel,
+  formatInrMinorUnits,
   first,
   money,
+  hasValidV2BillFinancials,
+  isV2Bill,
   status,
   str,
   type Data,
@@ -174,6 +178,57 @@ export function DetailFields({ data }: { data: Data }) {
     </dl>
   );
 }
+
+export function V2BillFinancialSummary({
+  data,
+  compact = false,
+}: {
+  data: Data;
+  compact?: boolean;
+}) {
+  if (!hasValidV2BillFinancials(data)) {
+    return <span role="status">V2 financial details unavailable</span>;
+  }
+
+  const rawLines = Array.isArray(data.chargeLines) ? data.chargeLines : [];
+  const chargeLines = rawLines.flatMap((line, index) => {
+    if (!line || typeof line !== 'object' || Array.isArray(line)) return [];
+    const item = line as Record<string, unknown>;
+    const label = first(item, ['label', 'description', 'name', 'title']);
+    const lineAmount = item.amountMinor;
+    if (!label || typeof lineAmount !== 'number' || !Number.isSafeInteger(lineAmount) || lineAmount < 0) {
+      return [];
+    }
+    return [{ key: `${label}-${index}`, label, amountMinor: lineAmount }];
+  });
+  const billingPeriod = typeof data.billingPeriod === 'string' ? data.billingPeriod.trim() : '';
+
+  return (
+    <div className={compact ? 'v2-bill-summary v2-bill-summary-compact' : 'v2-bill-summary'}>
+      {billingPeriod && <p className="v2-bill-period">Billing period: {billingPeriod}</p>}
+      <dl className="v2-bill-balances">
+        <div><dt>Total</dt><dd>{formatInrMinorUnits(data.amountMinor)}</dd></div>
+        <div><dt>Paid</dt><dd>{formatInrMinorUnits(data.paidAmountMinor)}</dd></div>
+        <div><dt>Credit applied</dt><dd>{formatInrMinorUnits(data.creditAppliedMinor)}</dd></div>
+        <div><dt>Outstanding</dt><dd>{formatInrMinorUnits(data.outstandingAmountMinor)}</dd></div>
+      </dl>
+      {chargeLines.length > 0 && (
+        <div className="v2-bill-charge-lines">
+          <strong>Charges</strong>
+          <ul>
+            {chargeLines.map((line) => (
+              <li key={line.key}>
+                <span>{line.label}</span>
+                <span>{formatInrMinorUnits(line.amountMinor)}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function pageBase(s: Session) {
   return s.role === 'resident' ? '/' + s.community!.slug + '/' : '/';
 }
@@ -184,6 +239,12 @@ function canCreate(s: Session, m: Module) {
   );
 }
 function moduleStatus(module: Module, data: Data) {
+  if (module === 'billing' && isV2Bill(data)) {
+    const classification = classifyV2Bill(data);
+    if (classification === 'history') return 'settled';
+    if (classification === 'unavailable') return 'unavailable';
+    return str(data.status).toLowerCase();
+  }
   if (module === 'facilities') {
     const facilityStatus = status(data).toLowerCase();
     if (['maintenance', 'under maintenance'].includes(facilityStatus)) return 'Maintenance';
@@ -468,7 +529,7 @@ function ScopedModule({
   const statuses =
     module === 'facilities'
       ? ['Active', 'Maintenance', 'Inactive']
-      : [...new Set(resource.rows.map((r) => status(r.data)).filter(Boolean))];
+      : [...new Set(resource.rows.map((r) => moduleStatus(module, r.data)).filter(Boolean))];
   const pageCount = Math.max(1, Math.ceil(rows.length / 12));
   const currentPage = Math.min(page, pageCount - 1);
   function close() {
@@ -965,7 +1026,9 @@ function ScopedModule({
                         </small>
                       </th>
                       <td>
-                        {['billing', 'payments'].includes(module)
+                        {module === 'billing' && isV2Bill(row.data) ? (
+                          <V2BillFinancialSummary data={row.data} compact />
+                        ) : ['billing', 'payments'].includes(module)
                           ? money(amount(row.data))
                           : first(
                               row.data,
@@ -1963,10 +2026,24 @@ function RecordDetails({
             data={
               module === 'facilities'
                 ? { ...d, status: undefined, pricePerDay: undefined }
-              : d
+                : module === 'billing' && isV2Bill(d)
+                  ? { ...d, amount: undefined }
+                  : d
             }
           />
-          {module === 'billing' && str(d.status).toLowerCase() === 'paid' && (
+          {module === 'billing' && isV2Bill(d) && (
+            <>
+              <V2BillFinancialSummary data={d} />
+              {s.role === 'admin' && (
+                <p className="v2-bill-action-state">
+                  {classifyV2Bill(d) === 'current'
+                    ? 'Billing V2 payment actions will be available in the next step.'
+                    : 'Payment actions unavailable for this V2 bill.'}
+                </p>
+              )}
+            </>
+          )}
+          {module === 'billing' && !isV2Bill(d) && str(d.status).toLowerCase() === 'paid' && (
             <dl className="detail-fields payment-settlement-fields">
               <div>
                 <dt>Payment status</dt>
@@ -1996,7 +2073,7 @@ function RecordDetails({
               )}
             </dl>
           )}
-          {module === 'billing' && s.role === 'admin' && (
+          {module === 'billing' && s.role === 'admin' && !isV2Bill(d) && (
             <RecordPaymentPanel session={s} bill={row} onRecorded={onPaymentRecorded} />
           )}
         </>

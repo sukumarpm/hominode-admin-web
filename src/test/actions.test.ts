@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
   createComplaint,
   createFacility,
@@ -8,6 +9,7 @@ import {
   getCommunityPaymentConfig,
   parseCommunityPaymentConfig,
   recordOfflinePayment,
+  recordOfflinePaymentV2,
   updateCommunityPaymentConfig,
   communityPaymentConfigPayload,
   setFacilityAvailability,
@@ -17,6 +19,7 @@ import {
 } from '../actions';
 import { type CreateFacilityInput, type Data, type UpdateFacilityInput } from '../models';
 import { adminData, makeSession, residentData } from './fixtures';
+import { saveOfflinePaymentAttemptV2, type OfflinePaymentAttemptV2 } from '../offlinePaymentV2';
 const m = vi.hoisted(() => ({
   user: {
     uid: 'resident-1',
@@ -31,6 +34,7 @@ const m = vi.hoisted(() => ({
   get: vi.fn(),
   add: vi.fn(),
   update: vi.fn(),
+  set: vi.fn(),
   upload: vi.fn(),
   downloadUrl: vi.fn(),
   deleteObject: vi.fn(),
@@ -52,7 +56,7 @@ vi.mock('firebase/firestore', () => ({
   getDocs: vi.fn(),
   query: vi.fn(),
   where: vi.fn(),
-  setDoc: vi.fn(),
+  setDoc: m.set,
 }));
 vi.mock('firebase/storage', () => ({
   ref: m.storageRef,
@@ -81,6 +85,7 @@ beforeEach(() => {
         : m.profile,
   }));
 });
+afterEach(() => vi.restoreAllMocks());
 
 function adminPaymentSession() {
   m.user = {
@@ -230,6 +235,135 @@ describe('Admin offline payment action', () => {
       paymentMethod: 'cash',
       paymentReference: '',
     });
+  });
+});
+
+describe('Admin Billing V2 offline payment action', () => {
+  const attempt: OfflinePaymentAttemptV2 = {
+    communityId: 'community-1',
+    residentId: 'resident-1',
+    amountMinor: 125050,
+    paymentMethod: 'bank_transfer',
+    paymentReference: 'REF-18',
+    idempotencyKey: 'offline_attempt-18',
+  };
+  const successfulResult = {
+    success: true,
+    transactionId: 'txn-18',
+    allocations: [{ billId: 'bill-2', amountMinor: 125000 }],
+    excessCreditMinor: 50,
+    alreadyCompleted: false,
+  };
+
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it('calls only the V2 callable with the exact saved request and document-independent idempotency key', async () => {
+    const session = adminPaymentSession();
+    mockOfflinePaymentBill();
+    saveOfflinePaymentAttemptV2(attempt);
+    m.call.mockResolvedValue(successfulResult);
+
+    await expect(recordOfflinePaymentV2(session, attempt)).resolves.toEqual(successfulResult);
+    expect(m.call).toHaveBeenCalledExactlyOnceWith('recordOfflinePaymentV2', attempt);
+    expect(localStorage.length).toBe(0);
+    expect(m.add).not.toHaveBeenCalled();
+    expect(m.update).not.toHaveBeenCalled();
+    expect(m.set).not.toHaveBeenCalled();
+    expect(m.get.mock.invocationCallOrder.at(-1)).toBeLessThan(
+      m.call.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('allows retrying the exact persisted request and key after an ambiguous callable error', async () => {
+    const session = adminPaymentSession();
+    mockOfflinePaymentBill();
+    saveOfflinePaymentAttemptV2(attempt);
+    m.call.mockRejectedValueOnce(Error('timeout')).mockResolvedValueOnce({
+      ...successfulResult,
+      alreadyCompleted: true,
+    });
+
+    await expect(recordOfflinePaymentV2(session, attempt)).rejects.toThrow('timeout');
+    await expect(recordOfflinePaymentV2(session, attempt)).resolves.toMatchObject({
+      alreadyCompleted: true,
+    });
+    expect(localStorage.length).toBe(0);
+    expect(m.call.mock.calls.map(([name, payload]) => [name, payload])).toEqual([
+      ['recordOfflinePaymentV2', attempt],
+      ['recordOfflinePaymentV2', attempt],
+    ]);
+  });
+
+  it('requires an exact saved attempt before any callable request', async () => {
+    const session = adminPaymentSession();
+    mockOfflinePaymentBill();
+    await expect(recordOfflinePaymentV2(session, attempt)).rejects.toThrow('Save this exact');
+    expect(m.call).not.toHaveBeenCalled();
+
+    saveOfflinePaymentAttemptV2(attempt);
+    await expect(
+      recordOfflinePaymentV2(session, { ...attempt, idempotencyKey: 'fresh-key' }),
+    ).rejects.toThrow('exact payment attempt');
+    expect(m.call).not.toHaveBeenCalled();
+  });
+
+  it('does not reach the callable when saving the attempt fails', async () => {
+    const session = adminPaymentSession();
+    mockOfflinePaymentBill();
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw Error('quota exceeded');
+    });
+    expect(() => saveOfflinePaymentAttemptV2(attempt)).toThrow('quota exceeded');
+    await expect(recordOfflinePaymentV2(session, attempt)).rejects.toThrow('Save this exact');
+    expect(m.call).not.toHaveBeenCalled();
+  });
+
+  it('rejects a community other than the currently authorized selection', async () => {
+    const session = adminPaymentSession();
+    mockOfflinePaymentBill();
+    const otherCommunityAttempt = { ...attempt, communityId: 'community-2' };
+    saveOfflinePaymentAttemptV2(otherCommunityAttempt);
+    await expect(recordOfflinePaymentV2(session, otherCommunityAttempt)).rejects.toThrow(
+      'authorized community',
+    );
+    expect(m.call).not.toHaveBeenCalled();
+  });
+
+  it('does not call V2 after current admin access is revoked', async () => {
+    const session = adminPaymentSession();
+    m.profile = { ...adminData, authorizedCommunityIds: ['community-2'] };
+    mockOfflinePaymentBill();
+    saveOfflinePaymentAttemptV2(attempt);
+    await expect(recordOfflinePaymentV2(session, attempt)).rejects.toThrow('Community access revoked');
+    expect(m.call).not.toHaveBeenCalled();
+  });
+
+  it('uses no direct financial ledger writes in the V2 action', () => {
+    const source = readFileSync('src/actions.ts', 'utf8');
+    const start = source.indexOf('export async function recordOfflinePaymentV2(');
+    const end = source.indexOf('\n}\n', start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    const actionSource = source.slice(start, end);
+    expect(actionSource).toContain("call('recordOfflinePaymentV2'");
+    expect(actionSource).not.toMatch(
+      /paymentTransactions|paymentAllocations|residentCreditEntries|residentFinancialAccounts|paymentSettlementsV2|\b(addDoc|setDoc|updateDoc)\s*\(/,
+    );
+  });
+
+  it.each([
+    ['failed response', { ...successfulResult, success: false }],
+    ['missing transaction id', { ...successfulResult, transactionId: '' }],
+    ['missing allocations', { ...successfulResult, allocations: undefined }],
+    ['unsafe excess credit', { ...successfulResult, excessCreditMinor: Number.MAX_SAFE_INTEGER + 1 }],
+  ])('rejects %s and leaves the saved attempt unresolved', async (_label, response) => {
+    const session = adminPaymentSession();
+    mockOfflinePaymentBill();
+    saveOfflinePaymentAttemptV2(attempt);
+    m.call.mockResolvedValue(response);
+    await expect(recordOfflinePaymentV2(session, attempt)).rejects.toThrow('response could not be validated');
+    expect(localStorage.length).toBe(1);
   });
 });
 

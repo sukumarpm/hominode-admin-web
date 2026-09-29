@@ -26,6 +26,14 @@ import {
   type UpdateFacilityInput,
 } from './models';
 import { assertResident, assertScope, parseCommunity, parseProfile } from './policy';
+import {
+  clearOfflinePaymentAttemptV2,
+  parseOfflinePaymentAttemptV2,
+  parseOfflinePaymentResultV2,
+  requireSavedOfflinePaymentAttemptV2,
+  type OfflinePaymentAttemptV2,
+  type OfflinePaymentResultV2,
+} from './offlinePaymentV2';
 
 export async function createEvent(
   session: Session,
@@ -466,6 +474,36 @@ export async function recordOfflinePayment(
   } catch {
     throw Error('Payment could not be recorded. Refresh the bill and try again.');
   }
+}
+
+/** Record one Billing V2 offline payment through the idempotent trusted callable. */
+export async function recordOfflinePaymentV2(
+  session: Session,
+  input: OfflinePaymentAttemptV2,
+): Promise<OfflinePaymentResultV2> {
+  const s = requirePaymentAdmin(await currentAuthority(session));
+  const attempt = parseOfflinePaymentAttemptV2(input);
+  if (!attempt) throw Error('Offline payment details are invalid.');
+  if (
+    attempt.communityId !== s.community!.id ||
+    !s.profile.authorizedCommunityIds.includes(attempt.communityId)
+  )
+    throw Error('Select an authorized community for this payment.');
+
+  const savedAttempt = requireSavedOfflinePaymentAttemptV2(attempt);
+
+  const response: unknown = await call('recordOfflinePaymentV2', {
+    communityId: savedAttempt.communityId,
+    residentId: savedAttempt.residentId,
+    amountMinor: savedAttempt.amountMinor,
+    paymentMethod: savedAttempt.paymentMethod,
+    paymentReference: savedAttempt.paymentReference,
+    idempotencyKey: savedAttempt.idempotencyKey,
+  });
+  const result = parseOfflinePaymentResultV2(response);
+  if (!result) throw Error('The payment response could not be validated. Refresh and reconcile before retrying.');
+  clearOfflinePaymentAttemptV2(savedAttempt.communityId, savedAttempt.residentId, result);
+  return result;
 }
 
 function required(v: string, label: string) {

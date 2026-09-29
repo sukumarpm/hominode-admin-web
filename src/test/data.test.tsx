@@ -21,7 +21,7 @@ vi.mock('firebase/firestore', () => ({
     return listener.stop;
   }),
 }));
-import { useRows } from '../data';
+import { useAdminV2PaymentProofs, useRows } from '../data';
 it('shares listeners, filters mismatched records and cleans up on unmount', () => {
   const s = makeSession();
   const first = renderHook(() => useRows(s, 'visitors'));
@@ -66,6 +66,46 @@ it('clears old community results immediately when switching scope', () => {
   act(() => next.error(Error('Access denied')));
   expect(result.current.error).toBe('Access denied');
   expect(result.current.rows).toHaveLength(0);
+  unmount();
+});
+
+it('subscribes Admin only to community V2 proofs and preserves Firestore document IDs', async () => {
+  const firestore = await import('firebase/firestore');
+  const session = makeSession('admin');
+  const start = m.listeners.length;
+  const { result, unmount } = renderHook(() => useAdminV2PaymentProofs(session, true));
+  const listener = m.listeners[start];
+
+  expect(firestore.collection).toHaveBeenCalledWith(expect.anything(), 'paymentProofsV2');
+  expect(firestore.where).toHaveBeenCalledWith('communityId', '==', 'community-1');
+  act(() =>
+    listener.next({
+      docs: [
+        {
+          id: 'firestore-proof-id',
+          data: () => ({ id: 'embedded-proof-id', communityId: 'community-1' }),
+        },
+        {
+          id: 'foreign-proof-id',
+          data: () => ({ communityId: 'community-2' }),
+        },
+      ],
+    }),
+  );
+
+  expect(result.current.rows.map((row) => row.id)).toEqual(['firestore-proof-id']);
+  expect(result.current.rows[0].data.id).toBe('embedded-proof-id');
+  unmount();
+  expect(listener.stop).toHaveBeenCalledOnce();
+});
+
+it('does not subscribe residents to paymentProofsV2', () => {
+  const start = m.listeners.length;
+  const { result, unmount } = renderHook(() =>
+    useAdminV2PaymentProofs(makeSession('resident'), true),
+  );
+  expect(result.current).toEqual({ rows: [], loading: false, error: '' });
+  expect(m.listeners).toHaveLength(start);
   unmount();
 });
 

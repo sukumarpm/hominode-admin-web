@@ -44,7 +44,14 @@ import {
 import { RecordPaymentPanel } from './components/RecordPaymentPanel';
 import { Card, Modal, Pill, State } from './components';
 import { PhoneNumberInput } from './components/PhoneNumberInput';
-import { safeUrl, titleOf, useRows, type Module } from './data';
+import {
+  safeUrl,
+  titleOf,
+  useAdminV2PaymentProofs,
+  useRows,
+  type Module,
+  type Resource,
+} from './data';
 import { FacilityActions, FacilityForm } from './FacilityForm';
 import { call } from './firebase';
 import {
@@ -55,7 +62,9 @@ import {
   first,
   money,
   hasValidV2BillFinancials,
+  hasValidV2PaymentProof,
   isV2Bill,
+  isV2PaymentProof,
   status,
   str,
   type Data,
@@ -492,6 +501,19 @@ function ScopedModule({
   }
   const bookingAllowed = canUseFeature(entitlement, 'facilityBooking');
   const resource = useRows(s, module, revision);
+  const v2ProofResource = useAdminV2PaymentProofs(
+    s,
+    module === 'payments' && s.role === 'admin',
+    revision,
+  );
+  const displayResource: Resource =
+    module === 'payments' && s.role === 'admin'
+      ? {
+          rows: [...resource.rows, ...v2ProofResource.rows],
+          loading: resource.loading || v2ProofResource.loading,
+          error: resource.error,
+        }
+      : resource;
   const base = pageBase(s);
   const title = routeName === 'requests' ? 'Service Requests' : labels[module];
   const showCards =
@@ -505,7 +527,7 @@ function ScopedModule({
           ),
         ]
       : [];
-  const rows = resource.rows
+  const rows = displayResource.rows
     .filter(
       (r) =>
         (filter === 'all' || moduleStatus(module, r.data) === filter) &&
@@ -524,17 +546,30 @@ function ScopedModule({
         return moduleStatus(module, a.data).localeCompare(moduleStatus(module, b.data));
       return titleOf(a.data).localeCompare(titleOf(b.data));
     });
-  const selected = resource.rows.find((r) => r.id === params.get('record'));
+  const recordSource = params.get('recordSource');
+  const selected =
+    module === 'payments' && s.role === 'admin' && recordSource === 'v2'
+      ? v2ProofResource.rows.find((r) => r.id === params.get('record'))
+      : displayResource.rows.find(
+          (r) =>
+            r.id === params.get('record') &&
+            (recordSource === 'v1'
+              ? !isV2PaymentProof(r.data)
+              : recordSource === 'v2'
+                ? isV2PaymentProof(r.data)
+                : true),
+        );
   const create = params.get('create') === '1' && canCreate(s, module);
   const statuses =
     module === 'facilities'
       ? ['Active', 'Maintenance', 'Inactive']
-      : [...new Set(resource.rows.map((r) => moduleStatus(module, r.data)).filter(Boolean))];
+      : [...new Set(displayResource.rows.map((r) => moduleStatus(module, r.data)).filter(Boolean))];
   const pageCount = Math.max(1, Math.ceil(rows.length / 12));
   const currentPage = Math.min(page, pageCount - 1);
   function close() {
     setParams((p) => {
       p.delete('record');
+      p.delete('recordSource');
       p.delete('create');
       p.delete('edit');
       return p;
@@ -637,16 +672,16 @@ function ScopedModule({
       ) : (
         <div className="module-summary">
           <span>
-            <strong>{resource.loading ? '…' : resource.error ? '—' : resource.rows.length}</strong>{' '}
+            <strong>{displayResource.loading ? '…' : displayResource.error ? '—' : displayResource.rows.length}</strong>{' '}
             Total {title.toLowerCase()}
           </span>
           <span>
             <strong>
-              {resource.loading
+              {displayResource.loading
                 ? '…'
-                : resource.error
+                : displayResource.error
                   ? '—'
-                  : resource.rows.filter((r) =>
+                  : displayResource.rows.filter((r) =>
                       ['pending', 'expected', 'open'].includes(status(r.data)),
                     ).length}
             </strong>{' '}
@@ -725,7 +760,7 @@ function ScopedModule({
             <RefreshCw size={19} />
           </button>
         </div>
-        <State resource={resource} empty={'No ' + title.toLowerCase() + ' to display yet.'}>
+        <State resource={displayResource} empty={'No ' + title.toLowerCase() + ' to display yet.'}>
           {!rows.length ? (
             <p className="empty-state">No matches. Try another search or status.</p>
           ) : showCards ? (
@@ -1010,7 +1045,13 @@ function ScopedModule({
                 </thead>
                 <tbody>
                   {rows.slice(currentPage * 12, currentPage * 12 + 12).map((row) => (
-                    <tr key={row.id}>
+                    <tr
+                      key={
+                        module === 'payments' && isV2PaymentProof(row.data)
+                          ? `v2:${row.id}`
+                          : `v1:${row.id}`
+                      }
+                    >
                       <th scope="row">
                         <strong>
                           {module === 'payments'
@@ -1026,7 +1067,11 @@ function ScopedModule({
                         </small>
                       </th>
                       <td>
-                        {module === 'billing' && isV2Bill(row.data) ? (
+                        {module === 'payments' && isV2PaymentProof(row.data) ? (
+                          hasValidV2PaymentProof(row.data, row.id)
+                            ? formatInrMinorUnits(row.data.submittedAmountMinor)
+                            : '—'
+                        ) : module === 'billing' && isV2Bill(row.data) ? (
                           <V2BillFinancialSummary data={row.data} compact />
                         ) : ['billing', 'payments'].includes(module)
                           ? money(amount(row.data))
@@ -1072,7 +1117,16 @@ function ScopedModule({
                         <button
                           className="text-button"
                           aria-label={'View ' + titleOf(row.data)}
-                          onClick={() => setParams({ record: row.id })}
+                          onClick={() =>
+                            setParams(
+                              module === 'payments'
+                                ? {
+                                    record: row.id,
+                                    recordSource: isV2PaymentProof(row.data) ? 'v2' : 'v1',
+                                  }
+                                : { record: row.id },
+                            )
+                          }
                         >
                           View <ArrowRight size={15} />
                         </button>
@@ -1082,6 +1136,9 @@ function ScopedModule({
                 </tbody>
               </table>
             </div>
+          )}
+          {module === 'payments' && s.role === 'admin' && v2ProofResource.error && (
+            <p role="status">V2 payment proofs could not be loaded. Legacy payments remain available.</p>
           )}
         </State>
         {rows.length > 12 && (
@@ -1101,7 +1158,7 @@ function ScopedModule({
           </div>
         )}
       </Card>
-      {params.has('record') && !selected && !resource.loading && !resource.error && (
+      {params.has('record') && !selected && !displayResource.loading && !displayResource.error && (
         <p role="status">This record is no longer available in your community.</p>
       )}
       {selected && (
@@ -1990,6 +2047,7 @@ function RecordDetails({
           <Pill value={moduleStatus(module, d)} />
           <PaymentReviewSection
             data={d}
+            paymentId={row.id}
             canReview={s.role === 'admin'}
             busy={busy}
             receipt={receipt}
@@ -2001,12 +2059,14 @@ function RecordDetails({
             }
             onVerify={() =>
               void perform(async () => {
+                if (isV2PaymentProof(d)) return;
                 await currentAuthority(s);
                 return call('verifyPaymentProof', { paymentId: row.id });
               })
             }
             onReject={(rejectionReason) =>
               void perform(async () => {
+                if (isV2PaymentProof(d)) return;
                 await currentAuthority(s);
                 return call('rejectPaymentProof', {
                   paymentId: row.id,

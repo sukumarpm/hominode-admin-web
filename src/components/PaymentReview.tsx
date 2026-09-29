@@ -1,4 +1,13 @@
-import { dateLabel, first, money, str, type Data } from '../models';
+import {
+  dateLabel,
+  first,
+  formatInrMinorUnits,
+  hasValidV2PaymentProof,
+  isV2PaymentProof,
+  money,
+  str,
+  type Data,
+} from '../models';
 import { useState } from 'react';
 
 function formattedValue(value: unknown): string {
@@ -34,7 +43,46 @@ function providerLabel(value: unknown, isAdminAttestation: boolean): string {
   return formattedValue(value);
 }
 
-export function PaymentReviewDetails({ data }: { data: Data }) {
+export function PaymentReviewDetails({
+  data,
+  paymentId,
+}: {
+  data: Data;
+  paymentId?: string;
+}) {
+  if (isV2PaymentProof(data)) {
+    if (!hasValidV2PaymentProof(data, paymentId)) {
+      return <p role="status">V2 payment proof unavailable</p>;
+    }
+    const values: [string, string][] = [
+      ['Submitted amount', formatInrMinorUnits(data.submittedAmountMinor)],
+      ['Payment method', 'UPI'],
+      ['Provider', 'Direct UPI'],
+      ['Verification', 'Manual'],
+      ['Evidence', 'Receipt'],
+      ['Payment reference', str(data.paymentReference) || 'Not provided'],
+      ['Bill reference', str(data.billId)],
+      ['Resident reference', str(data.residentId)],
+      ['Submitted', dateLabel(data.submittedAt) === '—' ? 'Not specified' : dateLabel(data.submittedAt)],
+      ['Status', formattedValue(data.status)],
+    ];
+    return (
+      <>
+        <dl className="detail-fields payment-review-fields">
+          {values.map(([label, value]) => (
+            <div key={label}>
+              <dt>{label}</dt>
+              <dd>{value}</dd>
+            </div>
+          ))}
+        </dl>
+        {data.status === 'completed' && (
+          <p className="payment-proof-completion-note">This payment proof is completed.</p>
+        )}
+      </>
+    );
+  }
+
   const method = data.method ?? data.paymentMethod;
   const isAdminAttestation = str(data.evidenceType).toLowerCase() === 'admin_attestation';
   const provider = providerLabel(data.provider, isAdminAttestation);
@@ -90,6 +138,7 @@ export function PaymentReviewDetails({ data }: { data: Data }) {
 
 export function PaymentReviewSection({
   data,
+  paymentId,
   canReview,
   busy,
   receipt,
@@ -98,6 +147,7 @@ export function PaymentReviewSection({
   onReject,
 }: {
   data: Data;
+  paymentId?: string;
   canReview: boolean;
   busy: boolean;
   receipt: string;
@@ -106,23 +156,30 @@ export function PaymentReviewSection({
   onReject: (reason: string) => void;
 }) {
   const [reason, setReason] = useState('');
+  const isV2 = isV2PaymentProof(data);
+  const validV2 = isV2 && hasValidV2PaymentProof(data, paymentId);
   const isPending = str(data.status) === 'pending';
   const paymentMethod = str(data.method ?? data.paymentMethod).toLowerCase();
   const isAdminAttestedMethod = ['cash', 'bank_transfer', 'cheque', 'manual'].includes(
     paymentMethod,
   );
-  const hasReceipt = !!str(data.receiptPath);
+  const hasReceipt = !!str(data.receiptPath) && (!isV2 || validV2);
 
   return (
     <section className="payment-review-section" aria-label="Payment review">
-      <PaymentReviewDetails data={data} />
+      <PaymentReviewDetails data={data} paymentId={paymentId} />
       {hasReceipt && (
         <button type="button" onClick={onViewReceipt} disabled={busy}>
           View receipt
         </button>
       )}
       {receipt && <img className="receipt-image" src={receipt} alt="Payment receipt" />}
-      {canReview && isPending && !isAdminAttestedMethod && (
+      {validV2 && isPending && (
+        <p className="payment-review-v2-state">
+          Billing V2 review actions will be available in the next step.
+        </p>
+      )}
+      {!isV2 && canReview && isPending && !isAdminAttestedMethod && (
         <div className="payment-review-controls">
           <button type="button" className="primary" onClick={onVerify} disabled={busy}>
             Verify payment

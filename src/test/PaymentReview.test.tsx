@@ -1,14 +1,15 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
 import { PaymentReviewSection, paymentReference } from '../components/PaymentReview';
-import { type Data } from '../models';
+import { hasValidV2PaymentProof, isV2PaymentProof, type Data } from '../models';
 
 const noop = vi.fn();
 
-function review(data: Data, canReview = true) {
+function review(data: Data, canReview = true, paymentId?: string) {
   return render(
     <PaymentReviewSection
       data={data}
+      paymentId={paymentId}
       canReview={canReview}
       busy={false}
       receipt=""
@@ -18,6 +19,77 @@ function review(data: Data, canReview = true) {
     />,
   );
 }
+
+const v2Proof = (overrides: Data = {}): Data => ({
+  schemaVersion: 2,
+  currency: 'INR',
+  submittedAmountMinor: 123456,
+  communityId: 'community-1',
+  billId: 'bill-15',
+  residentId: 'resident-8',
+  userId: 'resident-8',
+  id: 'proof-1',
+  method: 'upi',
+  provider: 'direct_upi',
+  verificationMode: 'manual',
+  evidenceType: 'receipt',
+  status: 'pending',
+  receiptPath: 'payment_receipts/community-1/bill-15/proof-1.jpg',
+  paymentReference: 'UTR-938401',
+  submittedAt: new Date('2026-09-02T12:00:00Z'),
+  ...overrides,
+});
+
+it('detects only exact numeric V2 proof schema and validates the displayed proof scope', () => {
+  expect(isV2PaymentProof(v2Proof())).toBe(true);
+  expect(isV2PaymentProof(v2Proof({ schemaVersion: '2' }))).toBe(false);
+  expect(hasValidV2PaymentProof(v2Proof(), 'proof-1')).toBe(true);
+  expect(hasValidV2PaymentProof(v2Proof(), 'different-document')).toBe(false);
+  expect(hasValidV2PaymentProof(v2Proof({ userId: 'someone-else' }), 'proof-1')).toBe(false);
+  expect(hasValidV2PaymentProof(v2Proof({ currency: 'USD' }), 'proof-1')).toBe(false);
+  expect(hasValidV2PaymentProof(v2Proof({ receiptPath: '' }), 'proof-1')).toBe(false);
+});
+
+it('shows valid V2 proof details using minor amount and V2 metadata only', () => {
+  review(v2Proof({ amount: 1.23 }), true, 'proof-1');
+
+  expect(screen.getByText('Submitted amount')).toBeInTheDocument();
+  expect(screen.getByText('₹1,234.56')).toBeInTheDocument();
+  expect(screen.getByText('UPI')).toBeInTheDocument();
+  expect(screen.getByText('Direct UPI')).toBeInTheDocument();
+  expect(screen.getByText('Manual')).toBeInTheDocument();
+  expect(screen.getByText('Receipt')).toBeInTheDocument();
+  expect(screen.getByText('UTR-938401')).toBeInTheDocument();
+  expect(screen.getByText('bill-15')).toBeInTheDocument();
+  expect(screen.getByText('resident-8')).toBeInTheDocument();
+  expect(screen.getByText(/Sep 2, 2026/)).toBeInTheDocument();
+  expect(screen.getByText('Pending')).toBeInTheDocument();
+  expect(screen.queryByText('₹1.23')).not.toBeInTheDocument();
+  expect(screen.getByText('Billing V2 review actions will be available in the next step.'))
+    .toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Verify payment' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Reject proof' })).not.toBeInTheDocument();
+});
+
+it('keeps completed V2 wording specific to the proof, with no review controls', () => {
+  review(v2Proof({ status: 'completed' }), true, 'proof-1');
+
+  expect(screen.getByText('This payment proof is completed.')).toBeInTheDocument();
+  expect(screen.getByText('Completed')).toBeInTheDocument();
+  expect(screen.queryByText(/bill (is )?fully paid|bill settled/i)).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Verify payment' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Reject proof' })).not.toBeInTheDocument();
+});
+
+it('fails closed for malformed exact V2 without V1 financial or review fallback', () => {
+  review(v2Proof({ currency: 'USD', amount: 999 }), true, 'proof-1');
+
+  expect(screen.getByText('V2 payment proof unavailable')).toBeInTheDocument();
+  expect(screen.queryByText(/₹/)).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'View receipt' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Verify payment' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Reject proof' })).not.toBeInTheDocument();
+});
 
 it('displays Direct UPI proof metadata and the trimmed transaction reference', () => {
   review({

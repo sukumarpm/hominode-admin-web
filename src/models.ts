@@ -212,6 +212,33 @@ export function classifyV2Bill(data: Data): V2BillClassification {
   return 'unavailable';
 }
 
+/** V2 payment proofs are identified only by their exact numeric schema marker. */
+export function isV2PaymentProof(data: Data): boolean {
+  return data.schemaVersion === 2;
+}
+
+export function hasValidV2PaymentProof(data: Data, documentId?: string): boolean {
+  if (!isV2PaymentProof(data)) return false;
+  const id = str(data.id);
+  const rowId = str(documentId);
+  const status = data.status;
+  return (
+    data.currency === 'INR' &&
+    safeMinor(data.submittedAmountMinor, false) &&
+    !!str(data.communityId) &&
+    !!str(data.billId) &&
+    !!str(data.residentId) &&
+    data.userId === data.residentId &&
+    (!id || !rowId || id === rowId) &&
+    (data.id == null || !!id) &&
+    data.method === 'upi' &&
+    data.provider === 'direct_upi' &&
+    data.evidenceType === 'receipt' &&
+    (status === 'pending' || status === 'failed' || status === 'completed') &&
+    (status !== 'pending' || !!str(data.receiptPath))
+  );
+}
+
 export function amount(d: Data): number {
   for (const k of ['amount', 'totalAmount', 'billAmount', 'total', 'dueAmount']) {
     const v = d[k];

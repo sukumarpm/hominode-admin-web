@@ -3,7 +3,12 @@ import { readFileSync } from 'node:fs';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
-import { useRows, type Module, type Resource } from '../data';
+import {
+  useAdminV2PaymentProofs,
+  useRows,
+  type Module,
+  type Resource,
+} from '../data';
 import {
   classifyV2Bill,
   formatInrMinorUnits,
@@ -26,6 +31,7 @@ vi.mock('../firebase', () => ({
 vi.mock('../data', async () => ({
   ...(await vi.importActual<typeof import('../data')>('../data')),
   useRows: vi.fn(),
+  useAdminV2PaymentProofs: vi.fn(),
 }));
 vi.mock('../subscriptionContext', () => ({
   useSubscription: () => ({ entitlement: null, loading: false, error: '' }),
@@ -63,6 +69,7 @@ function renderBilling(rows: Row[]) {
     loading: false,
     error: '',
   }));
+  vi.mocked(useAdminV2PaymentProofs).mockReturnValue({ rows: [], loading: false, error: '' });
   return render(
     <MemoryRouter>
       <AuthContext
@@ -76,6 +83,36 @@ function renderBilling(rows: Row[]) {
         }}
       >
         <ModulePage module="billing" />
+      </AuthContext>
+    </MemoryRouter>,
+  );
+}
+
+function renderPayments(v1Rows: Row[], v2Rows: Row[]) {
+  const session = makeSession('admin');
+  vi.mocked(useRows).mockImplementation((_session, module: Module): Resource => ({
+    rows: module === 'payments' ? v1Rows : [],
+    loading: false,
+    error: '',
+  }));
+  vi.mocked(useAdminV2PaymentProofs).mockReturnValue({
+    rows: v2Rows,
+    loading: false,
+    error: '',
+  });
+  return render(
+    <MemoryRouter>
+      <AuthContext
+        value={{
+          session,
+          loading: false,
+          error: '',
+          authenticated: true,
+          signOut: vi.fn(),
+          switchCommunity: vi.fn(),
+        }}
+      >
+        <ModulePage module="payments" />
       </AuthContext>
     </MemoryRouter>,
   );
@@ -210,5 +247,96 @@ describe('Admin Web Billing V2 bill foundation', () => {
       expect(source).not.toContain(`collection('${collection}')`);
       expect(source).not.toContain(`collection("${collection}")`);
     }
+  });
+
+  it('merges V1 and V2 proof rows and selects V2 by source when document IDs collide', () => {
+    renderPayments(
+      [
+        row(
+          {
+            title: 'Legacy payment',
+            communityId: 'community-1',
+            amount: 765.43,
+            method: 'external',
+            status: 'pending',
+          },
+          'shared-payment-id',
+        ),
+      ],
+      [
+        row(
+          {
+            schemaVersion: 2,
+            id: 'shared-payment-id',
+            communityId: 'community-1',
+            currency: 'INR',
+            submittedAmountMinor: 123456,
+            billId: 'bill-v2-1',
+            residentId: 'resident-v2-1',
+            userId: 'resident-v2-1',
+            method: 'upi',
+            provider: 'direct_upi',
+            evidenceType: 'receipt',
+            verificationMode: 'manual',
+            status: 'pending',
+            receiptPath: 'payment_receipts/community-1/bill-v2-1/shared-payment-id.jpg',
+            paymentReference: 'UTR-V2-1',
+            submittedAt: new Date('2026-09-02T12:00:00Z'),
+            title: 'Direct UPI proof',
+          },
+          'shared-payment-id',
+        ),
+      ],
+    );
+
+    const legacyRow = screen
+      .getByRole('button', { name: 'View Legacy payment' })
+      .closest('tr')!;
+    const v2Row = screen.getByRole('button', { name: 'View Direct UPI proof' }).closest('tr')!;
+    expect(legacyRow.cells[1].textContent).toBe('₹765.43');
+    expect(v2Row.cells[1].textContent).toBe('₹1,234.56');
+
+    fireEvent.click(screen.getByRole('button', { name: 'View Direct UPI proof' }));
+    expect(screen.getAllByText('UTR-V2-1')).toHaveLength(2);
+    expect(screen.getAllByText('₹1,234.56')).toHaveLength(2);
+    expect(screen.queryByRole('button', { name: 'Verify payment' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Reject proof' })).not.toBeInTheDocument();
+  });
+
+  it('shows unavailable for malformed V2 list/detail data without V1 amount fallback', () => {
+    renderPayments(
+      [],
+      [
+        row(
+          {
+            schemaVersion: 2,
+            id: 'bad-proof',
+            currency: 'INR',
+            submittedAmountMinor: '12500',
+            amount: 125,
+            communityId: 'community-1',
+            billId: 'bill-1',
+            residentId: 'resident-1',
+            userId: 'resident-1',
+            method: 'upi',
+            provider: 'direct_upi',
+            evidenceType: 'receipt',
+            status: 'pending',
+            receiptPath: 'receipt.jpg',
+            title: 'Malformed V2 proof',
+          },
+          'bad-proof',
+        ),
+      ],
+    );
+    const proofRow = screen
+      .getByRole('button', { name: 'View Malformed V2 proof' })
+      .closest('tr')!;
+    expect(proofRow.cells[1].textContent).toBe('—');
+    fireEvent.click(screen.getByRole('button', { name: 'View Malformed V2 proof' }));
+    expect(screen.getByText('V2 payment proof unavailable')).toBeInTheDocument();
+    expect(screen.queryByText('₹125.00')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Verify payment' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Reject proof' })).not.toBeInTheDocument();
   });
 });

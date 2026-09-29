@@ -42,6 +42,7 @@ import {
   PaymentReviewSection,
 } from './components/PaymentReview';
 import { RecordPaymentPanel } from './components/RecordPaymentPanel';
+import { RecordOfflinePaymentV2Panel } from './components/RecordOfflinePaymentV2Panel';
 import { Card, Modal, Pill, State } from './components';
 import { PhoneNumberInput } from './components/PhoneNumberInput';
 import {
@@ -503,7 +504,7 @@ function ScopedModule({
   const resource = useRows(s, module, revision);
   const v2ProofResource = useAdminV2PaymentProofs(
     s,
-    module === 'payments' && s.role === 'admin',
+    ['payments', 'billing'].includes(module) && s.role === 'admin',
     revision,
   );
   const displayResource: Resource =
@@ -1170,6 +1171,7 @@ function ScopedModule({
           onClose={close}
           onFacilitySaved={facilitySaved}
           onPaymentRecorded={paymentRecorded}
+          v2ProofResource={v2ProofResource}
           startEditing={params.get('edit') === '1'}
         />
       )}{' '}
@@ -1963,6 +1965,7 @@ function RecordDetails({
   onClose,
   onFacilitySaved,
   onPaymentRecorded,
+  v2ProofResource,
   startEditing = false,
 }: {
   s: Session;
@@ -1971,6 +1974,7 @@ function RecordDetails({
   onClose: () => void;
   onFacilitySaved: () => void;
   onPaymentRecorded: () => void;
+  v2ProofResource: Resource;
   startEditing?: boolean;
 }) {
   const [editingFacility, setEditingFacility] = useState(
@@ -2106,11 +2110,20 @@ function RecordDetails({
             <>
               <V2BillFinancialSummary data={d} />
               {s.role === 'admin' && (
-                <p className="v2-bill-action-state">
-                  {classifyV2Bill(d) === 'current'
-                    ? 'Billing V2 payment actions will be available in the next step.'
-                    : 'Payment actions unavailable for this V2 bill.'}
-                </p>
+                <RecordOfflinePaymentV2Panel
+                  session={s}
+                  bill={row}
+                  proofsLoading={v2ProofResource.loading}
+                  proofsError={v2ProofResource.error}
+                  hasPendingProof={v2ProofResource.rows.some(
+                    (proof) =>
+                      proof.data.schemaVersion === 2 &&
+                      proof.data.billId === row.id &&
+                      proof.data.status === 'pending',
+                  )}
+                  onRecorded={onPaymentRecorded}
+                  onClose={onClose}
+                />
               )}
             </>
           )}

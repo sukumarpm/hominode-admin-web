@@ -51,6 +51,9 @@ const v2Bill: Data = {
   status: 'partially_paid',
   title: 'September maintenance',
   communityId: 'community-1',
+  residentId: 'resident-1',
+  residentName: 'Test Resident',
+  flatId: 'unit-1',
   flatLabel: 'Tower A · 1203',
 };
 
@@ -62,14 +65,23 @@ function row(data: Data, id = 'bill-1'): Row {
   return { id, data };
 }
 
-function renderBilling(rows: Row[]) {
-  const session = makeSession('admin');
+function renderBilling(
+  rows: Row[],
+  proofRows: Row[] = [],
+  proofState: Partial<Resource> = {},
+  session = makeSession('admin'),
+) {
   vi.mocked(useRows).mockImplementation((_session, module: Module): Resource => ({
     rows: module === 'billing' ? rows : [],
     loading: false,
     error: '',
   }));
-  vi.mocked(useAdminV2PaymentProofs).mockReturnValue({ rows: [], loading: false, error: '' });
+  vi.mocked(useAdminV2PaymentProofs).mockReturnValue({
+    rows: proofRows,
+    loading: false,
+    error: '',
+    ...proofState,
+  });
   return render(
     <MemoryRouter>
       <AuthContext
@@ -201,14 +213,47 @@ describe('Admin Web Billing V2 bill foundation', () => {
     expect(screen.queryByText(/₹/)).toBeNull();
   });
 
-  it('shows the V2 action notice without invoking the V1 RecordPaymentPanel', () => {
+  it('shows the V2 offline-payment action without invoking the V1 RecordPaymentPanel', async () => {
     renderBilling([row(validV2())]);
     expect(screen.getAllByText('₹2,500.00')).toHaveLength(2);
     fireEvent.click(screen.getByRole('button', { name: /View September maintenance/ }));
-    expect(
-      screen.getByText('Billing V2 payment actions will be available in the next step.'),
-    ).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Record Offline Payment' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Record Payment' })).toBeNull();
+    expect(vi.mocked(useAdminV2PaymentProofs).mock.calls.at(-1)?.[1]).toBe(true);
+  });
+
+  it('does not enable the Admin proof subscription for resident billing', () => {
+    renderBilling([row(validV2())], [], {}, makeSession('resident'));
+    expect(vi.mocked(useAdminV2PaymentProofs).mock.calls.at(-1)?.[1]).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: /View details/ }));
+    expect(screen.queryByRole('button', { name: 'Record Offline Payment' })).toBeNull();
+  });
+
+  it('blocks offline payment while any exact V2 pending proof exists for the bill, even if malformed', () => {
+    renderBilling([row(validV2())], [row({ schemaVersion: 2, billId: 'bill-1', status: 'pending' }, 'proof-1')]);
+    fireEvent.click(screen.getByRole('button', { name: /View September maintenance/ }));
+    expect(screen.getByText(/a payment proof is pending/i)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Record Offline Payment' })).toBeNull();
+  });
+
+  it.each(['failed', 'completed'])('does not block offline payment for an exact V2 %s proof', async (proofStatus) => {
+    renderBilling(
+      [row(validV2())],
+      [row({ schemaVersion: 2, billId: 'bill-1', status: proofStatus }, 'proof-1')],
+    );
+    fireEvent.click(screen.getByRole('button', { name: /View September maintenance/ }));
+    expect(await screen.findByRole('button', { name: 'Record Offline Payment' })).toBeTruthy();
+  });
+
+  it('blocks the V2 offline action while proof subscription is loading or failed', () => {
+    const loadingView = renderBilling([row(validV2())], [], { loading: true });
+    fireEvent.click(screen.getByRole('button', { name: /View September maintenance/ }));
+    expect(screen.getByText(/payment proof status is being checked/i)).toBeTruthy();
+    loadingView.unmount();
+    renderBilling([row(validV2())], [], { error: 'permission denied' });
+    fireEvent.click(screen.getByRole('button', { name: /View September maintenance/ }));
+    expect(screen.getByText(/payment proof status is being checked/i)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Record Offline Payment' })).toBeNull();
   });
 
   it('keeps V1 amount display and V1 Record Payment panel', () => {
@@ -231,7 +276,7 @@ describe('Admin Web Billing V2 bill foundation', () => {
     expect(screen.getByText('V2 financial details unavailable')).toBeTruthy();
     expect(screen.queryByText(/₹/)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /View September maintenance/ }));
-    expect(screen.getByText('Payment actions unavailable for this V2 bill.')).toBeTruthy();
+    expect(screen.getByText('Offline payment unavailable for this V2 bill.')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Record Payment' })).toBeNull();
   });
 

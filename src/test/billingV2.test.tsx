@@ -299,8 +299,8 @@ describe('Admin Web Billing V2 bill foundation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'View Direct UPI proof' }));
     expect(screen.getAllByText('UTR-V2-1')).toHaveLength(2);
     expect(screen.getAllByText('₹1,234.56')).toHaveLength(2);
-    expect(screen.queryByRole('button', { name: 'Verify payment' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Reject proof' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Verify payment' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Reject proof' })).toBeDisabled();
   });
 
   it('shows unavailable for malformed V2 list/detail data without V1 amount fallback', () => {
@@ -338,5 +338,35 @@ describe('Admin Web Billing V2 bill foundation', () => {
     expect(screen.queryByText('₹125.00')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Verify payment' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Reject proof' })).not.toBeInTheDocument();
+  });
+
+  it('routes valid V2 and V1 review actions only to their versioned callables', () => {
+    const source = readFileSync('src/pages.tsx', 'utf8');
+    const verifyStart = source.indexOf('onVerify={() =>');
+    const rejectStart = source.indexOf('onReject={(rejectionReason) =>', verifyStart);
+    const verify = source.slice(verifyStart, rejectStart);
+    const rejectEnd = source.indexOf('\n            }', rejectStart);
+    const reject = source.slice(rejectStart, rejectEnd);
+
+    expect(verify).toContain('if (isV2PaymentProof(d))');
+    expect(verify).toContain('if (!hasValidV2PaymentProof(d, row.id)) return;');
+    expect(verify).toContain("call('verifyPaymentProofV2', { paymentId: row.id })");
+    expect(verify).toContain("call('verifyPaymentProof', { paymentId: row.id })");
+    expect(verify).not.toContain('billId:');
+    expect(
+      verify.indexOf('if (!hasValidV2PaymentProof(d, row.id)) return;'),
+    ).toBeLessThan(verify.indexOf("call('verifyPaymentProofV2'"));
+
+    expect(reject).toContain('if (!hasValidV2PaymentProof(d, row.id) || !rejectionReason.trim()) return;');
+    expect(reject).toContain("call('rejectPaymentProofV2'");
+    expect(reject).toContain('paymentId: row.id');
+    expect(reject).toContain('rejectionReason: rejectionReason.trim()');
+    expect(reject).toContain("call('rejectPaymentProof'");
+    expect(reject).not.toContain('billId:');
+  });
+
+  it('keeps this checkpoint free of V2 offline-payment wiring', () => {
+    const source = readFileSync('src/pages.tsx', 'utf8');
+    expect(source).not.toContain('recordOfflinePaymentV2');
   });
 });

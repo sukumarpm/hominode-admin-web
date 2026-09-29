@@ -65,8 +65,88 @@ it('shows valid V2 proof details using minor amount and V2 metadata only', () =>
   expect(screen.getByText(/Sep 2, 2026/)).toBeInTheDocument();
   expect(screen.getByText('Pending')).toBeInTheDocument();
   expect(screen.queryByText('₹1.23')).not.toBeInTheDocument();
-  expect(screen.getByText('Billing V2 review actions will be available in the next step.'))
-    .toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'View receipt' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Verify payment' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Reject proof' })).toBeDisabled();
+});
+
+it('enables V2 Verify only after receipt is loaded in the current detail session', () => {
+  const onViewReceipt = vi.fn();
+  const onVerify = vi.fn();
+  const props = {
+    data: v2Proof(),
+    paymentId: 'proof-1',
+    canReview: true,
+    busy: false,
+    onViewReceipt,
+    onVerify,
+    onReject: vi.fn(),
+  };
+  const view = render(<PaymentReviewSection {...props} receipt="" />);
+  expect(screen.getByRole('button', { name: 'Verify payment' })).toBeDisabled();
+  fireEvent.click(screen.getByRole('button', { name: 'View receipt' }));
+  expect(onViewReceipt).toHaveBeenCalledOnce();
+  expect(screen.getByRole('button', { name: 'Verify payment' })).toBeDisabled();
+
+  view.rerender(<PaymentReviewSection {...props} receipt="blob:loaded-receipt" />);
+  expect(screen.getByRole('button', { name: 'Verify payment' })).toBeEnabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Verify payment' }));
+  expect(onVerify).toHaveBeenCalledOnce();
+});
+
+it('requires a trimmed reason before V2 Reject and passes the trimmed reason', () => {
+  const onReject = vi.fn();
+  render(
+    <PaymentReviewSection
+      data={v2Proof()}
+      paymentId="proof-1"
+      canReview
+      busy={false}
+      receipt=""
+      onViewReceipt={noop}
+      onVerify={noop}
+      onReject={onReject}
+    />,
+  );
+  fireEvent.change(screen.getByLabelText('Rejection reason'), { target: { value: '   ' } });
+  expect(screen.getByRole('button', { name: 'Reject proof' })).toBeDisabled();
+  fireEvent.change(screen.getByLabelText('Rejection reason'), {
+    target: { value: '  Receipt unreadable  ' },
+  });
+  expect(screen.getByRole('button', { name: 'Reject proof' })).toBeEnabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Reject proof' }));
+  expect(onReject).toHaveBeenCalledWith('Receipt unreadable');
+});
+
+it('shows no V2 review controls to non-admins or for failed proofs', () => {
+  const { rerender } = render(
+    <PaymentReviewSection
+      data={v2Proof()}
+      paymentId="proof-1"
+      canReview={false}
+      busy={false}
+      receipt=""
+      onViewReceipt={noop}
+      onVerify={noop}
+      onReject={noop}
+    />,
+  );
+  expect(screen.queryByRole('button', { name: 'View receipt' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Verify payment' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Reject proof' })).not.toBeInTheDocument();
+
+  rerender(
+    <PaymentReviewSection
+      data={v2Proof({ status: 'failed' })}
+      paymentId="proof-1"
+      canReview
+      busy={false}
+      receipt=""
+      onViewReceipt={noop}
+      onVerify={noop}
+      onReject={noop}
+    />,
+  );
   expect(screen.queryByRole('button', { name: 'Verify payment' })).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Reject proof' })).not.toBeInTheDocument();
 });

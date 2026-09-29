@@ -164,20 +164,39 @@ export function PaymentReviewSection({
     paymentMethod,
   );
   const hasReceipt = !!str(data.receiptPath) && (!isV2 || validV2);
+  const showReceiptButton = hasReceipt && (!isV2 || canReview);
 
   return (
     <section className="payment-review-section" aria-label="Payment review">
       <PaymentReviewDetails data={data} paymentId={paymentId} />
-      {hasReceipt && (
+      {showReceiptButton && (
         <button type="button" onClick={onViewReceipt} disabled={busy}>
           View receipt
         </button>
       )}
       {receipt && <img className="receipt-image" src={receipt} alt="Payment receipt" />}
-      {validV2 && isPending && (
-        <p className="payment-review-v2-state">
-          Billing V2 review actions will be available in the next step.
-        </p>
+      {validV2 && canReview && isPending && (
+        <div className="payment-review-controls">
+          <button
+            type="button"
+            className="primary"
+            onClick={onVerify}
+            disabled={busy || !receipt}
+          >
+            Verify payment
+          </button>
+          <label>
+            Rejection reason
+            <textarea value={reason} onChange={(event) => setReason(event.target.value)} />
+          </label>
+          <button
+            type="button"
+            onClick={() => onReject(reason.trim())}
+            disabled={!reason.trim() || busy}
+          >
+            Reject proof
+          </button>
+        </div>
       )}
       {!isV2 && canReview && isPending && !isAdminAttestedMethod && (
         <div className="payment-review-controls">

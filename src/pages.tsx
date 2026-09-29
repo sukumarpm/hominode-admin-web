@@ -2059,14 +2059,25 @@ function RecordDetails({
             }
             onVerify={() =>
               void perform(async () => {
-                if (isV2PaymentProof(d)) return;
+                if (isV2PaymentProof(d)) {
+                  if (!hasValidV2PaymentProof(d, row.id)) return;
+                  await currentAuthority(s);
+                  return call('verifyPaymentProofV2', { paymentId: row.id });
+                }
                 await currentAuthority(s);
                 return call('verifyPaymentProof', { paymentId: row.id });
               })
             }
             onReject={(rejectionReason) =>
               void perform(async () => {
-                if (isV2PaymentProof(d)) return;
+                if (isV2PaymentProof(d)) {
+                  if (!hasValidV2PaymentProof(d, row.id) || !rejectionReason.trim()) return;
+                  await currentAuthority(s);
+                  return call('rejectPaymentProofV2', {
+                    paymentId: row.id,
+                    rejectionReason: rejectionReason.trim(),
+                  });
+                }
                 await currentAuthority(s);
                 return call('rejectPaymentProof', {
                   paymentId: row.id,

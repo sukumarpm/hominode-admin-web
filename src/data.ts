@@ -304,6 +304,51 @@ export function useAdminV2PaymentProofs(
   return useSyncExternalStore(listen, snapshot, snapshot);
 }
 
+/** Admin-only, community-scoped read for the recurring schedule dashboard. */
+export function useAdminV2RecurringSchedules(
+  session: Session,
+  enabled: boolean,
+  revision = 0,
+): Resource {
+  const config = useMemo(() => {
+    if (!enabled || session.role !== 'admin') return { spec: null, error: '' };
+    try {
+      const communityId = assertScope(session);
+      return {
+        spec: {
+          collection: 'billingSchedules',
+          filters: [['communityId', '==', communityId]] as Filter[],
+        },
+        error: '',
+      };
+    } catch (e) {
+      return { spec: null, error: message(e) };
+    }
+  }, [enabled, session]);
+  const key = JSON.stringify([
+    'adminV2RecurringSchedules',
+    session.uid,
+    session.community?.id || '',
+    config.spec,
+    revision,
+  ]);
+  const fallback = useMemo<Resource>(
+    () =>
+      config.error
+        ? { rows: [], loading: false, error: config.error }
+        : config.spec
+          ? initial
+          : { rows: [], loading: false, error: '' },
+    [config.error, config.spec],
+  );
+  const listen = useCallback(
+    (notify: () => void) => (config.spec ? subscribe(key, config.spec, notify) : () => {}),
+    [key, config.spec],
+  );
+  const snapshot = useCallback(() => stores.get(key)?.state || fallback, [key, fallback]);
+  return useSyncExternalStore(listen, snapshot, snapshot);
+}
+
 export function safeUrl(value: unknown): string | undefined {
   try {
     const u = new URL(str(value));

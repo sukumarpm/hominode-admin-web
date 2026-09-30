@@ -43,12 +43,14 @@ import {
 } from './components/PaymentReview';
 import { RecordPaymentPanel } from './components/RecordPaymentPanel';
 import { RecordOfflinePaymentV2Panel } from './components/RecordOfflinePaymentV2Panel';
+import { RecurringSchedulesPanel } from './components/RecurringSchedules';
 import { Card, Modal, Pill, State } from './components';
 import { PhoneNumberInput } from './components/PhoneNumberInput';
 import {
   safeUrl,
   titleOf,
   useAdminV2PaymentProofs,
+  useAdminV2RecurringSchedules,
   useRows,
   type Module,
   type Resource,
@@ -507,6 +509,11 @@ function ScopedModule({
     ['payments', 'billing'].includes(module) && s.role === 'admin',
     revision,
   );
+  const recurringScheduleResource = useAdminV2RecurringSchedules(
+    s,
+    module === 'billing' && s.role === 'admin',
+    revision,
+  );
   const displayResource: Resource =
     module === 'payments' && s.role === 'admin'
       ? {
@@ -692,6 +699,9 @@ function ScopedModule({
             <ShieldCheck size={18} /> {s.community?.name || 'Platform registry'}
           </span>
         </div>
+      )}
+      {module === 'billing' && s.role === 'admin' && (
+        <RecurringSchedulesPanel resource={recurringScheduleResource} />
       )}
       <Card>
         <div className="filters">

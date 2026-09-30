@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import {
   useAdminV2PaymentProofs,
+  useAdminV2RecurringSchedules,
   useRows,
   type Module,
   type Resource,
@@ -12,9 +13,12 @@ import {
 import {
   classifyV2Bill,
   formatInrMinorUnits,
+  hasValidV2RecurringSchedule,
   hasValidV2BillFinancials,
   isV2Bill,
   money,
+  nextRecurringBillingPeriod,
+  recurringScheduleTotalMinor,
   type Data,
   type Row,
 } from '../models';
@@ -32,6 +36,7 @@ vi.mock('../data', async () => ({
   ...(await vi.importActual<typeof import('../data')>('../data')),
   useRows: vi.fn(),
   useAdminV2PaymentProofs: vi.fn(),
+  useAdminV2RecurringSchedules: vi.fn(),
 }));
 vi.mock('../subscriptionContext', () => ({
   useSubscription: () => ({ entitlement: null, loading: false, error: '' }),
@@ -70,6 +75,7 @@ function renderBilling(
   proofRows: Row[] = [],
   proofState: Partial<Resource> = {},
   session = makeSession('admin'),
+  scheduleState: Partial<Resource> = {},
 ) {
   vi.mocked(useRows).mockImplementation((_session, module: Module): Resource => ({
     rows: module === 'billing' ? rows : [],
@@ -81,6 +87,12 @@ function renderBilling(
     loading: false,
     error: '',
     ...proofState,
+  });
+  vi.mocked(useAdminV2RecurringSchedules).mockReturnValue({
+    rows: [],
+    loading: false,
+    error: '',
+    ...scheduleState,
   });
   return render(
     <MemoryRouter>
@@ -413,5 +425,346 @@ describe('Admin Web Billing V2 bill foundation', () => {
   it('keeps this checkpoint free of V2 offline-payment wiring', () => {
     const source = readFileSync('src/pages.tsx', 'utf8');
     expect(source).not.toContain('recordOfflinePaymentV2');
+  });
+});
+
+
+function validRecurringSchedule(overrides: Partial<Data> = {}): Data {
+  return {
+    schemaVersion: 2,
+    id: 'schedule-1',
+    communityId: 'community-1',
+    currency: 'INR',
+    frequency: 'monthly',
+    status: 'active',
+    scope: 'community',
+    generationDay: 5,
+    dueDay: 20,
+    startBillingPeriod: '2026-09',
+    endBillingPeriod: null,
+    currentRevisionId: 'schedule-revision-1',
+    revisionNo: 1,
+    chargeLines: [{ label: 'Maintenance', amountMinor: 250000 }],
+    generatedThroughBillingPeriod: null,
+    generationInProgressBillingPeriod: null,
+    name: 'Monthly maintenance',
+    ...overrides,
+  };
+}
+
+describe('Admin Web recurring schedule dashboard', () => {
+  it.each([
+    ['active', 'Active'],
+    ['paused', 'Paused'],
+    ['stopped', 'Stopped'],
+  ])('renders %s schedule status', (scheduleStatus, expectedLabel) => {
+    renderBilling(
+      [],
+      [],
+      {},
+      makeSession('admin'),
+      {
+        rows: [
+          row(
+            validRecurringSchedule({ status: scheduleStatus }),
+            'schedule-1',
+          ),
+        ],
+      },
+    );
+
+    expect(screen.getByText('Recurring Billing')).toBeTruthy();
+    expect(screen.getByText(expectedLabel)).toBeTruthy();
+  });
+
+  it.each([
+    [
+      { scope: 'community' },
+      'Entire Community',
+    ],
+    [
+      { scope: 'building', buildingId: 'tower-1' },
+      'Building · tower-1',
+    ],
+    [
+      { scope: 'unit', buildingId: 'tower-1', flatId: 'unit-1' },
+      'Individual Unit · tower-1 · unit-1',
+    ],
+    [
+      { scope: 'units', flatIds: ['unit-1', 'unit-2'] },
+      'Selected Units · unit-1, unit-2',
+    ],
+  ])('renders recurring scope %o', (scopeFields, expectedText) => {
+    renderBilling(
+      [],
+      [],
+      {},
+      makeSession('admin'),
+      {
+        rows: [
+          row(
+            validRecurringSchedule(scopeFields),
+            'schedule-1',
+          ),
+        ],
+      },
+    );
+
+    expect(screen.getByText(expectedText)).toBeTruthy();
+  });
+
+  it('accepts selected-units schedules without a buildingId', () => {
+    const schedule = validRecurringSchedule({
+      scope: 'units',
+      flatIds: ['unit-a', 'unit-b'],
+    });
+
+    expect(hasValidV2RecurringSchedule(schedule, 'schedule-1')).toBe(true);
+  });
+
+  it('formats recurring charge lines and total only from integer minor units', () => {
+    const schedule = validRecurringSchedule({
+      chargeLines: [
+        { label: 'Maintenance', amountMinor: 250000 },
+        { label: 'Security', amountMinor: 1250 },
+      ],
+    });
+
+    expect(recurringScheduleTotalMinor(schedule)).toBe(251250);
+
+    renderBilling(
+      [],
+      [],
+      {},
+      makeSession('admin'),
+      { rows: [row(schedule, 'schedule-1')] },
+    );
+
+    expect(screen.getByText('Maintenance')).toBeTruthy();
+    expect(screen.getByText('Security')).toBeTruthy();
+    expect(screen.getByText('₹2,500.00')).toBeTruthy();
+    expect(screen.getByText('₹12.50')).toBeTruthy();
+    expect(screen.getByText('₹2,512.50')).toBeTruthy();
+  });
+
+  it('uses startBillingPeriod when nothing has generated yet', () => {
+    expect(
+      nextRecurringBillingPeriod(
+        validRecurringSchedule({
+          startBillingPeriod: '2026-09',
+          generatedThroughBillingPeriod: null,
+        }),
+      ),
+    ).toBe('2026-09');
+  });
+
+  it('uses exactly the next month after generatedThroughBillingPeriod', () => {
+    expect(
+      nextRecurringBillingPeriod(
+        validRecurringSchedule({
+          startBillingPeriod: '2026-01',
+          generatedThroughBillingPeriod: '2026-11',
+        }),
+      ),
+    ).toBe('2026-12');
+  });
+
+  it('rolls December into January of the next year', () => {
+    expect(
+      nextRecurringBillingPeriod(
+        validRecurringSchedule({
+          generatedThroughBillingPeriod: '2026-12',
+        }),
+      ),
+    ).toBe('2027-01');
+  });
+
+  it('shows open-ended and in-progress schedule state', () => {
+    renderBilling(
+      [],
+      [],
+      {},
+      makeSession('admin'),
+      {
+        rows: [
+          row(
+            validRecurringSchedule({
+              endBillingPeriod: null,
+              generationInProgressBillingPeriod: '2026-09',
+            }),
+            'schedule-1',
+          ),
+        ],
+      },
+    );
+
+    expect(screen.getByText('Open-ended')).toBeTruthy();
+    expect(screen.getByText('Generation in progress: 2026-09')).toBeTruthy();
+  });
+
+  it('shows attention instead of claiming an old missed period will catch up', () => {
+    renderBilling(
+      [],
+      [],
+      {},
+      makeSession('admin'),
+      {
+        rows: [
+          row(
+            validRecurringSchedule({
+              startBillingPeriod: '2020-01',
+              generatedThroughBillingPeriod: null,
+            }),
+            'schedule-1',
+          ),
+        ],
+      },
+    );
+
+    expect(
+      screen.getByText('Previous billing period requires attention.'),
+    ).toBeTruthy();
+  });
+
+  it.each([
+    [{ currency: 'USD' }, 'invalid currency'],
+    [{ generationDay: 0 }, 'invalid generation day'],
+    [{ generationDay: 20, dueDay: 10 }, 'due day before generation day'],
+    [{ currentRevisionId: '   ' }, 'missing revision'],
+    [
+      { chargeLines: [{ label: 'Maintenance', amountMinor: '250000' }] },
+      'non-integer charge value',
+    ],
+    [{ id: 'different-schedule' }, 'document identity mismatch'],
+  ])('fails closed for %s', (overrides, _label) => {
+    expect(
+      hasValidV2RecurringSchedule(
+        validRecurringSchedule(overrides),
+        'schedule-1',
+      ),
+    ).toBe(false);
+  });
+
+  it('renders malformed recurring records as unavailable', () => {
+    renderBilling(
+      [],
+      [],
+      {},
+      makeSession('admin'),
+      {
+        rows: [
+          row(
+            validRecurringSchedule({ currency: 'USD' }),
+            'schedule-1',
+          ),
+        ],
+      },
+    );
+
+    expect(
+      screen.getByText('Recurring schedule details unavailable.'),
+    ).toBeTruthy();
+    expect(screen.queryByText('₹2,500.00')).toBeNull();
+  });
+
+  it('shows recurring loading state without affecting the rest of Billing', () => {
+    renderBilling([], [], {}, makeSession('admin'), { loading: true });
+
+    expect(
+      screen.getByText('Loading recurring schedules…'),
+    ).toBeTruthy();
+  });
+
+  it('shows recurring empty state', () => {
+    renderBilling([], [], {}, makeSession('admin'), { rows: [] });
+
+    expect(
+      screen.getByText('No recurring billing schedules yet.'),
+    ).toBeTruthy();
+  });
+
+  it('isolates recurring read errors from the existing bill list', () => {
+    renderBilling(
+      [row(validV2())],
+      [],
+      {},
+      makeSession('admin'),
+      { error: 'permission denied' },
+    );
+
+    expect(
+      screen.getByText(
+        'Recurring billing schedules could not be loaded.',
+      ),
+    ).toBeTruthy();
+
+    expect(
+      screen.getByRole('button', {
+        name: /View September maintenance/,
+      }),
+    ).toBeTruthy();
+  });
+
+  it('does not expose recurring schedules on the resident Billing page', () => {
+    renderBilling(
+      [],
+      [],
+      {},
+      makeSession('resident'),
+      {
+        rows: [
+          row(validRecurringSchedule(), 'schedule-1'),
+        ],
+      },
+    );
+
+    expect(screen.queryByText('Recurring Billing')).toBeNull();
+
+    expect(
+      vi.mocked(useAdminV2RecurringSchedules).mock.calls.at(-1)?.[1],
+    ).toBe(false);
+  });
+
+  it('contains no recurring mutation controls in this read-only phase', () => {
+    renderBilling(
+      [],
+      [],
+      {},
+      makeSession('admin'),
+      {
+        rows: [
+          row(validRecurringSchedule(), 'schedule-1'),
+        ],
+      },
+    );
+
+    for (const name of [
+      'Create Recurring Schedule',
+      'Edit',
+      'Pause',
+      'Resume',
+      'Stop',
+      'Generate Now',
+      'Retry',
+      'Reconcile',
+    ]) {
+      expect(
+        screen.queryByRole('button', { name }),
+      ).toBeNull();
+    }
+  });
+
+  it('does not wire recurring mutation callables into the display-only component', () => {
+    const source = readFileSync(
+      'src/components/RecurringSchedules.tsx',
+      'utf8',
+    );
+
+    expect(source).not.toMatch(/createBillingScheduleV2/);
+    expect(source).not.toMatch(/reviseBillingScheduleV2/);
+    expect(source).not.toMatch(/pauseBillingScheduleV2/);
+    expect(source).not.toMatch(/resumeBillingScheduleV2/);
+    expect(source).not.toMatch(/stopBillingScheduleV2/);
+    expect(source).not.toMatch(/\bcall\s*\(/);
   });
 });

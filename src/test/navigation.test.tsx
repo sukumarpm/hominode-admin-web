@@ -17,7 +17,13 @@ vi.mock('../firebase', () => ({
 }));
 vi.mock('../data', async () => {
   const actual = await vi.importActual<typeof import('../data')>('../data');
-  return { ...actual, useRows: vi.fn(() => ({ rows: [], loading: false, error: '' })) };
+  const empty = { rows: [], loading: false, error: '' };
+  return {
+    ...actual,
+    useRows: vi.fn(() => empty),
+    useAdminV2PaymentProofs: vi.fn(() => empty),
+    useAdminV2RecurringSchedules: vi.fn(() => empty),
+  };
 });
 const base = APP_ROLE === 'resident' ? '/green-valley' : '/';
 function path(module: string) {

@@ -21,7 +21,7 @@ vi.mock('firebase/firestore', () => ({
     return listener.stop;
   }),
 }));
-import { useAdminV2PaymentProofs, useRows } from '../data';
+import { useAdminV2PaymentProofs, useAdminV2RecurringSchedules, useRows } from '../data';
 it('shares listeners, filters mismatched records and cleans up on unmount', () => {
   const s = makeSession();
   const first = renderHook(() => useRows(s, 'visitors'));
@@ -144,5 +144,77 @@ it('does not republish stale notices after a notice listener loses permission', 
   );
   expect(result.current.rows).toHaveLength(0);
   expect(result.current.error).toBe('Notice access revoked');
+  unmount();
+});
+
+
+it('subscribes Admin only to own-community recurring schedules', async () => {
+  const firestore = await import('firebase/firestore');
+  const session = makeSession('admin');
+  const start = m.listeners.length;
+
+  const { result, unmount } = renderHook(() =>
+    useAdminV2RecurringSchedules(session, true),
+  );
+
+  const listener = m.listeners[start];
+
+  expect(firestore.collection).toHaveBeenCalledWith(
+    expect.anything(),
+    'billingSchedules',
+  );
+  expect(firestore.where).toHaveBeenCalledWith(
+    'communityId',
+    '==',
+    'community-1',
+  );
+
+  act(() =>
+    listener.next({
+      docs: [
+        {
+          id: 'schedule-own',
+          data: () => ({
+            id: 'schedule-own',
+            communityId: 'community-1',
+          }),
+        },
+        {
+          id: 'schedule-foreign',
+          data: () => ({
+            id: 'schedule-foreign',
+            communityId: 'community-2',
+          }),
+        },
+      ],
+    }),
+  );
+
+  expect(result.current.rows.map((row) => row.id)).toEqual([
+    'schedule-own',
+  ]);
+
+  unmount();
+  expect(listener.stop).toHaveBeenCalledOnce();
+});
+
+it('does not subscribe residents to billingSchedules', () => {
+  const start = m.listeners.length;
+
+  const { result, unmount } = renderHook(() =>
+    useAdminV2RecurringSchedules(
+      makeSession('resident'),
+      true,
+    ),
+  );
+
+  expect(result.current).toEqual({
+    rows: [],
+    loading: false,
+    error: '',
+  });
+
+  expect(m.listeners).toHaveLength(start);
+
   unmount();
 });

@@ -212,6 +212,101 @@ export function classifyV2Bill(data: Data): V2BillClassification {
   return 'unavailable';
 }
 
+export type V2RecurringScheduleStatus = 'active' | 'paused' | 'stopped';
+export type V2RecurringScheduleScope = 'community' | 'building' | 'unit' | 'units';
+const billingPeriodPattern = /^(\d{4})-(0[1-9]|1[0-2])$/;
+
+export function isBillingPeriod(value: unknown): value is string {
+  return typeof value === 'string' && billingPeriodPattern.test(value);
+}
+
+export function isV2RecurringSchedule(data: Data): boolean {
+  return data.schemaVersion === 2;
+}
+
+function validScheduleChargeLines(value: unknown): value is { label: string; amountMinor: number }[] {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every(
+      (line) =>
+        !!line &&
+        typeof line === 'object' &&
+        !Array.isArray(line) &&
+        !!str((line as Data).label) &&
+        safeMinor((line as Data).amountMinor, false),
+    ) &&
+    value.reduce((total, line) => total + (line as Data).amountMinor as number, 0) <=
+      Number.MAX_SAFE_INTEGER
+  );
+}
+
+export function hasValidV2RecurringSchedule(data: Data, documentId?: string): boolean {
+  if (!isV2RecurringSchedule(data)) return false;
+  const generationDay = data.generationDay;
+  const dueDay = data.dueDay;
+  const revisionNo = data.revisionNo;
+  const status = data.status;
+  const scope = data.scope;
+  const endPeriod = data.endBillingPeriod;
+  const generatedThrough = data.generatedThroughBillingPeriod;
+  const inProgress = data.generationInProgressBillingPeriod;
+  const storedId = str(data.id);
+  const expectedId = str(documentId);
+  return (
+    data.currency === 'INR' &&
+    data.frequency === 'monthly' &&
+    (!storedId || !expectedId || storedId === expectedId) &&
+    !!str(data.communityId) &&
+    (status === 'active' || status === 'paused' || status === 'stopped') &&
+    (scope === 'community' || scope === 'building' || scope === 'unit' || scope === 'units') &&
+    (scope !== 'building' || !!str(data.buildingId)) &&
+    (scope !== 'unit' || (!!str(data.buildingId) && !!str(data.flatId))) &&
+    (scope !== 'units' ||
+      (Array.isArray(data.flatIds) &&
+        data.flatIds.length > 0 &&
+        data.flatIds.every((id) => typeof id === 'string' && !!id.trim()))) &&
+    typeof generationDay === 'number' &&
+    Number.isInteger(generationDay) &&
+    generationDay >= 1 &&
+    generationDay <= 28 &&
+    typeof dueDay === 'number' &&
+    Number.isInteger(dueDay) &&
+    dueDay >= generationDay &&
+    dueDay <= 28 &&
+    isBillingPeriod(data.startBillingPeriod) &&
+    (endPeriod == null || isBillingPeriod(endPeriod)) &&
+    (endPeriod == null || (data.startBillingPeriod as string) <= (endPeriod as string)) &&
+    !!str(data.currentRevisionId) &&
+    typeof revisionNo === 'number' &&
+    Number.isSafeInteger(revisionNo) &&
+    revisionNo > 0 &&
+    validScheduleChargeLines(data.chargeLines) &&
+    (generatedThrough == null || isBillingPeriod(generatedThrough)) &&
+    (inProgress == null || isBillingPeriod(inProgress))
+  );
+}
+
+export function recurringScheduleTotalMinor(data: Data): number | null {
+  if (!validScheduleChargeLines(data.chargeLines)) return null;
+  const total = data.chargeLines.reduce(
+    (sum, line) => sum + ((line as Data).amountMinor as number),
+    0,
+  );
+  return Number.isSafeInteger(total) ? total : null;
+}
+
+export function nextRecurringBillingPeriod(data: Data): string | null {
+  if (!isBillingPeriod(data.startBillingPeriod)) return null;
+  const generatedThrough = data.generatedThroughBillingPeriod;
+  if (generatedThrough == null) return data.startBillingPeriod;
+  if (!isBillingPeriod(generatedThrough)) return null;
+  const [year, month] = generatedThrough.split('-').map(Number);
+  return month === 12
+    ? `${String(year + 1).padStart(4, '0')}-01`
+    : `${String(year).padStart(4, '0')}-${String(month + 1).padStart(2, '0')}`;
+}
+
 /** V2 payment proofs are identified only by their exact numeric schema marker. */
 export function isV2PaymentProof(data: Data): boolean {
   return data.schemaVersion === 2;

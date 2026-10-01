@@ -708,7 +708,11 @@ function ScopedModule({
         </div>
       )}
       {module === 'billing' && s.role === 'admin' && (
-        <RecurringSchedulesPanel resource={recurringScheduleResource} />
+        <RecurringSchedulesPanel
+          resource={recurringScheduleResource}
+          session={s}
+          onRefresh={() => setRevision((value) => value + 1)}
+        />
       )}
       <Card>
         <div className="filters">

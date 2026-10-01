@@ -561,6 +561,21 @@ export interface CreateRecurringBillingScheduleV2Result {
   alreadyCompleted: boolean;
 }
 
+export type RecurringLifecycleStatusV2 = 'active' | 'paused' | 'stopped';
+
+export interface RecurringLifecycleMutationRequestV2 {
+  communityId: string;
+  scheduleId: string;
+  reason?: string;
+}
+
+export interface RecurringLifecycleMutationResultV2 {
+  success: true;
+  scheduleId: string;
+  status: RecurringLifecycleStatusV2;
+  lifecycleRevision: number;
+}
+
 const recurringBillingPeriodPattern = /^(\d{4})-(0[1-9]|1[0-2])$/;
 const recurringIdempotencyKeyPattern = /^[A-Za-z0-9_-]{1,128}$/;
 const recurringControlCharPattern = /[\u0000-\u001F\u007F]/;
@@ -870,6 +885,142 @@ export async function createRecurringBillingScheduleV2(
     throw Error('The recurring schedule response could not be validated.');
   }
   return result;
+}
+
+function normalizeRecurringLifecycleReason(value: unknown): string | undefined {
+  if (value == null) return undefined;
+  if (typeof value !== 'string') throw Error('Lifecycle reason must be a string.');
+  const reason = value.trim();
+  if (!reason) return undefined;
+  if (reason.length > 300) throw Error('Lifecycle reason must be 300 characters or fewer.');
+  return reason;
+}
+
+function parseRecurringLifecycleMutationResult(
+  value: unknown,
+): RecurringLifecycleMutationResultV2 | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (
+    record.success !== true ||
+    !str(record.scheduleId) ||
+    (record.status !== 'active' && record.status !== 'paused' && record.status !== 'stopped') ||
+    typeof record.lifecycleRevision !== 'number' ||
+    !Number.isSafeInteger(record.lifecycleRevision) ||
+    record.lifecycleRevision < 1
+  ) {
+    return null;
+  }
+  return {
+    success: true,
+    scheduleId: str(record.scheduleId),
+    status: record.status,
+    lifecycleRevision: record.lifecycleRevision,
+  };
+}
+
+async function mutateRecurringLifecycleV2(
+  session: Session,
+  input: RecurringLifecycleMutationRequestV2,
+  options: {
+    callableName: 'pauseBillingScheduleV2' | 'resumeBillingScheduleV2' | 'stopBillingScheduleV2';
+    expectedStatus: RecurringLifecycleStatusV2;
+    resolveAuthority?: typeof currentAuthority;
+    invokeCall?: (
+      name: string,
+      payload: RecurringLifecycleMutationRequestV2,
+    ) => Promise<unknown>;
+  },
+): Promise<RecurringLifecycleMutationResultV2> {
+  const resolveAuthority = options.resolveAuthority || currentAuthority;
+  const invokeCall =
+    options.invokeCall ??
+    ((name: string, payload: RecurringLifecycleMutationRequestV2) => call(name, { ...payload }));
+
+  const s = await resolveAuthority(session);
+  if (s.role !== 'admin' || s.profile.role !== 'admin') {
+    throw Error('An administrator is required.');
+  }
+  if (!s.community) throw Error('Select an authorized community.');
+
+  const communityId = recurringDocId(input.communityId, 'Community');
+  const scheduleId = recurringDocId(input.scheduleId, 'Schedule');
+  if (!s.profile.authorizedCommunityIds.includes(communityId)) {
+    throw Error('Select an authorized community for recurring billing.');
+  }
+  if (communityId !== s.community.id) {
+    throw Error('Recurring schedule community does not match your selected community.');
+  }
+
+  const reason = normalizeRecurringLifecycleReason(input.reason);
+  const payload: RecurringLifecycleMutationRequestV2 = reason
+    ? { communityId, scheduleId, reason }
+    : { communityId, scheduleId };
+
+  const response = await invokeCall(options.callableName, payload);
+  const result = parseRecurringLifecycleMutationResult(response);
+  if (!result) throw Error('The recurring lifecycle response could not be validated.');
+  if (result.scheduleId !== scheduleId) {
+    throw Error('Recurring lifecycle response schedule ID did not match the request.');
+  }
+  if (result.status !== options.expectedStatus) {
+    throw Error('Recurring lifecycle response status did not match the requested transition.');
+  }
+  return result;
+}
+
+export async function pauseRecurringBillingScheduleV2(
+  session: Session,
+  input: RecurringLifecycleMutationRequestV2,
+  dependencies: {
+    resolveAuthority?: typeof currentAuthority;
+    invokeCall?: (
+      name: string,
+      payload: RecurringLifecycleMutationRequestV2,
+    ) => Promise<unknown>;
+  } = {},
+): Promise<RecurringLifecycleMutationResultV2> {
+  return mutateRecurringLifecycleV2(session, input, {
+    callableName: 'pauseBillingScheduleV2',
+    expectedStatus: 'paused',
+    ...dependencies,
+  });
+}
+
+export async function resumeRecurringBillingScheduleV2(
+  session: Session,
+  input: RecurringLifecycleMutationRequestV2,
+  dependencies: {
+    resolveAuthority?: typeof currentAuthority;
+    invokeCall?: (
+      name: string,
+      payload: RecurringLifecycleMutationRequestV2,
+    ) => Promise<unknown>;
+  } = {},
+): Promise<RecurringLifecycleMutationResultV2> {
+  return mutateRecurringLifecycleV2(session, input, {
+    callableName: 'resumeBillingScheduleV2',
+    expectedStatus: 'active',
+    ...dependencies,
+  });
+}
+
+export async function stopRecurringBillingScheduleV2(
+  session: Session,
+  input: RecurringLifecycleMutationRequestV2,
+  dependencies: {
+    resolveAuthority?: typeof currentAuthority;
+    invokeCall?: (
+      name: string,
+      payload: RecurringLifecycleMutationRequestV2,
+    ) => Promise<unknown>;
+  } = {},
+): Promise<RecurringLifecycleMutationResultV2> {
+  return mutateRecurringLifecycleV2(session, input, {
+    callableName: 'stopBillingScheduleV2',
+    expectedStatus: 'stopped',
+    ...dependencies,
+  });
 }
 
 function required(v: string, label: string) {

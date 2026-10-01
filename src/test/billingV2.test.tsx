@@ -6,8 +6,12 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createRecurringBillingScheduleV2,
   normalizeRecurringBillingScheduleRequest,
+  pauseRecurringBillingScheduleV2,
   parseRecurringAmountInrToMinorUnits,
+  resumeRecurringBillingScheduleV2,
+  stopRecurringBillingScheduleV2,
 } from '../actions';
+import * as actionsModule from '../actions';
 import {
   useAdminV2PaymentProofs,
   useAdminV2RecurringSchedules,
@@ -743,7 +747,7 @@ describe('Admin Web recurring schedule dashboard', () => {
     ).toBe(false);
   });
 
-  it('exposes only recurring create control in this phase', () => {
+  it('shows Pause and Stop controls for active schedules', () => {
     renderBilling(
       [],
       [],
@@ -751,7 +755,199 @@ describe('Admin Web recurring schedule dashboard', () => {
       makeSession('admin'),
       {
         rows: [
-          row(validRecurringSchedule(), 'schedule-1'),
+          row(validRecurringSchedule({ status: 'active' }), 'schedule-1'),
+        ],
+      },
+    );
+
+    expect(screen.getByRole('button', { name: 'Pause' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Resume' })).toBeNull();
+  });
+
+  it('shows Resume and Stop controls for paused schedules', () => {
+    renderBilling(
+      [],
+      [],
+      {},
+      makeSession('admin'),
+      {
+        rows: [
+          row(validRecurringSchedule({ status: 'paused' }), 'schedule-1'),
+        ],
+      },
+    );
+
+    expect(screen.getByRole('button', { name: 'Resume' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Pause' })).toBeNull();
+  });
+
+  it('shows no lifecycle controls for stopped schedules', () => {
+    renderBilling(
+      [],
+      [],
+      {},
+      makeSession('admin'),
+      {
+        rows: [
+          row(validRecurringSchedule({ status: 'stopped' }), 'schedule-1'),
+        ],
+      },
+    );
+
+    expect(screen.queryByRole('button', { name: 'Pause' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Resume' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull();
+  });
+
+  it('keeps resident recurring dashboard free of lifecycle controls', () => {
+    renderBilling(
+      [],
+      [],
+      {},
+      makeSession('resident'),
+      {
+        rows: [row(validRecurringSchedule({ status: 'active' }), 'schedule-1')],
+      },
+    );
+
+    expect(screen.queryByRole('button', { name: 'Pause' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Resume' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull();
+  });
+
+  it('routes Pause lifecycle action only to pause wrapper and refreshes on success', async () => {
+    const pauseSpy = vi
+      .spyOn(actionsModule, 'pauseRecurringBillingScheduleV2')
+      .mockResolvedValue({
+        success: true,
+        scheduleId: 'schedule-1',
+        status: 'paused',
+        lifecycleRevision: 1,
+      });
+    const resumeSpy = vi.spyOn(actionsModule, 'resumeRecurringBillingScheduleV2');
+    const stopSpy = vi.spyOn(actionsModule, 'stopRecurringBillingScheduleV2');
+
+    renderBilling([], [], {}, makeSession('admin'), {
+      rows: [row(validRecurringSchedule({ status: 'active' }), 'schedule-1')],
+    });
+
+    const beforeRefreshCalls = vi.mocked(useAdminV2RecurringSchedules).mock.calls.length;
+    fireEvent.click(screen.getByRole('button', { name: 'Pause' }));
+    fireEvent.change(screen.getByLabelText('Reason (optional)'), {
+      target: { value: '  needs review  ' },
+    });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Pause' }).at(-1)!);
+
+    expect(pauseSpy).toHaveBeenCalledTimes(1);
+    expect(resumeSpy).not.toHaveBeenCalled();
+    expect(stopSpy).not.toHaveBeenCalled();
+    expect(await screen.findByText(/request completed successfully/i)).toBeTruthy();
+    expect(vi.mocked(useAdminV2RecurringSchedules).mock.calls.length).toBeGreaterThan(beforeRefreshCalls);
+
+    pauseSpy.mockRestore();
+    resumeSpy.mockRestore();
+    stopSpy.mockRestore();
+  });
+
+  it('routes Resume and Stop lifecycle actions to their wrappers only', async () => {
+    const pauseSpy = vi.spyOn(actionsModule, 'pauseRecurringBillingScheduleV2');
+    const resumeSpy = vi
+      .spyOn(actionsModule, 'resumeRecurringBillingScheduleV2')
+      .mockResolvedValue({
+        success: true,
+        scheduleId: 'schedule-1',
+        status: 'active',
+        lifecycleRevision: 2,
+      });
+    const stopSpy = vi.spyOn(actionsModule, 'stopRecurringBillingScheduleV2').mockResolvedValue({
+      success: true,
+      scheduleId: 'schedule-1',
+      status: 'stopped',
+      lifecycleRevision: 3,
+    });
+
+    const resumed = renderBilling([], [], {}, makeSession('admin'), {
+      rows: [row(validRecurringSchedule({ status: 'paused' }), 'schedule-1')],
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Resume' }).at(-1)!);
+    expect(resumeSpy).toHaveBeenCalledTimes(1);
+    expect(pauseSpy).not.toHaveBeenCalled();
+    resumed.unmount();
+
+    renderBilling([], [], {}, makeSession('admin'), {
+      rows: [row(validRecurringSchedule({ status: 'active' }), 'schedule-1')],
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Stop' }).at(-1)!);
+    expect(stopSpy).toHaveBeenCalledTimes(1);
+
+    pauseSpy.mockRestore();
+    resumeSpy.mockRestore();
+    stopSpy.mockRestore();
+  });
+
+  it('blocks lifecycle double-submit while request is in progress', () => {
+    let resolvePause!: (value: {
+      success: true;
+      scheduleId: string;
+      status: 'paused';
+      lifecycleRevision: number;
+    }) => void;
+    const pauseSpy = vi
+      .spyOn(actionsModule, 'pauseRecurringBillingScheduleV2')
+      .mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolvePause = resolve;
+          }),
+      );
+
+    renderBilling([], [], {}, makeSession('admin'), {
+      rows: [row(validRecurringSchedule({ status: 'active' }), 'schedule-1')],
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Pause' }));
+    const confirm = screen.getAllByRole('button', { name: 'Pause' }).at(-1)!;
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
+    expect(pauseSpy).toHaveBeenCalledTimes(1);
+
+    resolvePause({ success: true, scheduleId: 'schedule-1', status: 'paused', lifecycleRevision: 1 });
+    pauseSpy.mockRestore();
+  });
+
+  it('handles ambiguous lifecycle failures without automatic retry and forces refresh guidance', async () => {
+    const pauseSpy = vi
+      .spyOn(actionsModule, 'pauseRecurringBillingScheduleV2')
+      .mockRejectedValueOnce(Error('network timeout'));
+
+    renderBilling([], [], {}, makeSession('admin'), {
+      rows: [row(validRecurringSchedule({ status: 'active' }), 'schedule-1')],
+    });
+    const beforeRefreshCalls = vi.mocked(useAdminV2RecurringSchedules).mock.calls.length;
+
+    fireEvent.click(screen.getByRole('button', { name: 'Pause' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Pause' }).at(-1)!);
+
+    expect(pauseSpy).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText(/could not be confirmed/i)).toBeTruthy();
+    expect(screen.getByText(/confirm the current status before trying another action/i)).toBeTruthy();
+    expect(vi.mocked(useAdminV2RecurringSchedules).mock.calls.length).toBeGreaterThan(beforeRefreshCalls);
+
+    pauseSpy.mockRestore();
+  });
+
+  it('keeps recurring create available and excludes non-phase controls', () => {
+    renderBilling(
+      [],
+      [],
+      {},
+      makeSession('admin'),
+      {
+        rows: [
+          row(validRecurringSchedule({ status: 'active' }), 'schedule-1'),
         ],
       },
     );
@@ -762,31 +958,33 @@ describe('Admin Web recurring schedule dashboard', () => {
 
     for (const name of [
       'Edit',
+      'Revise',
       'Pause',
       'Resume',
-      'Stop',
       'Generate Now',
       'Retry',
       'Reconcile',
+      'History',
     ]) {
-      expect(
-        screen.queryByRole('button', { name }),
-      ).toBeNull();
+      if (['Pause', 'Resume'].includes(name)) continue;
+      expect(screen.queryByRole('button', { name })).toBeNull();
     }
   });
 
-  it('does not wire recurring mutation callables into the display-only component', () => {
+  it('does not introduce direct Firestore lifecycle writes in recurring schedules component', () => {
     const source = readFileSync(
       'src/components/RecurringSchedules.tsx',
       'utf8',
     );
 
-    expect(source).not.toMatch(/createBillingScheduleV2/);
     expect(source).not.toMatch(/reviseBillingScheduleV2/);
-    expect(source).not.toMatch(/pauseBillingScheduleV2/);
-    expect(source).not.toMatch(/resumeBillingScheduleV2/);
-    expect(source).not.toMatch(/stopBillingScheduleV2/);
-    expect(source).not.toMatch(/\bcall\s*\(/);
+    expect(source).not.toMatch(/generateBillingSchedule/);
+    expect(source).not.toMatch(/reconcile/);
+    expect(source).not.toMatch(/collection\(/);
+    expect(source).not.toMatch(/doc\(/);
+    expect(source).not.toMatch(/updateDoc\(/);
+    expect(source).not.toMatch(/setDoc\(/);
+    expect(source).not.toMatch(/addDoc\(/);
   });
 });
 
@@ -991,6 +1189,134 @@ describe('Admin Web recurring schedule create action contract', () => {
         invokeCall: async () => ({ success: true, scheduleId: '', revisionId: 'rev', revisionNo: 1, alreadyCompleted: false }),
       }),
     ).rejects.toThrow('The recurring schedule response could not be validated.');
+  });
+});
+
+describe('Admin Web recurring lifecycle action contract', () => {
+  const session = makeSession('admin');
+
+  function okResponse(status: 'active' | 'paused' | 'stopped') {
+    return {
+      success: true as const,
+      scheduleId: 'schedule-1',
+      status,
+      lifecycleRevision: 1,
+    };
+  }
+
+  it('Pause calls only pauseBillingScheduleV2 with exact request fields', async () => {
+    const invokeCall = vi.fn().mockResolvedValue(okResponse('paused'));
+    await pauseRecurringBillingScheduleV2(
+      session,
+      { communityId: 'community-1', scheduleId: 'schedule-1', reason: '  Need review  ' },
+      {
+        resolveAuthority: async () => ({ ...session, community: session.community! }),
+        invokeCall,
+      },
+    );
+
+    expect(invokeCall).toHaveBeenCalledTimes(1);
+    expect(invokeCall.mock.calls[0][0]).toBe('pauseBillingScheduleV2');
+    const payload = invokeCall.mock.calls[0][1] as Record<string, unknown>;
+    expect(Object.keys(payload).sort()).toEqual(['communityId', 'reason', 'scheduleId']);
+    expect(payload.communityId).toBe('community-1');
+    expect(payload.scheduleId).toBe('schedule-1');
+    expect(payload.reason).toBe('Need review');
+  });
+
+  it('Resume calls only resumeBillingScheduleV2', async () => {
+    const invokeCall = vi.fn().mockResolvedValue(okResponse('active'));
+    await resumeRecurringBillingScheduleV2(
+      session,
+      { communityId: 'community-1', scheduleId: 'schedule-1' },
+      {
+        resolveAuthority: async () => ({ ...session, community: session.community! }),
+        invokeCall,
+      },
+    );
+    expect(invokeCall).toHaveBeenCalledTimes(1);
+    expect(invokeCall.mock.calls[0][0]).toBe('resumeBillingScheduleV2');
+  });
+
+  it('Stop calls only stopBillingScheduleV2', async () => {
+    const invokeCall = vi.fn().mockResolvedValue(okResponse('stopped'));
+    await stopRecurringBillingScheduleV2(
+      session,
+      { communityId: 'community-1', scheduleId: 'schedule-1' },
+      {
+        resolveAuthority: async () => ({ ...session, community: session.community! }),
+        invokeCall,
+      },
+    );
+    expect(invokeCall).toHaveBeenCalledTimes(1);
+    expect(invokeCall.mock.calls[0][0]).toBe('stopBillingScheduleV2');
+  });
+
+  it('omits empty trimmed reason from lifecycle request', async () => {
+    const invokeCall = vi.fn().mockResolvedValue(okResponse('paused'));
+    await pauseRecurringBillingScheduleV2(
+      session,
+      { communityId: 'community-1', scheduleId: 'schedule-1', reason: '   ' },
+      {
+        resolveAuthority: async () => ({ ...session, community: session.community! }),
+        invokeCall,
+      },
+    );
+    const payload = invokeCall.mock.calls[0][1] as Record<string, unknown>;
+    expect(Object.keys(payload).sort()).toEqual(['communityId', 'scheduleId']);
+    expect(Object.hasOwn(payload, 'reason')).toBe(false);
+  });
+
+  it('rejects malformed lifecycle response', async () => {
+    await expect(
+      pauseRecurringBillingScheduleV2(
+        session,
+        { communityId: 'community-1', scheduleId: 'schedule-1' },
+        {
+          resolveAuthority: async () => ({ ...session, community: session.community! }),
+          invokeCall: async () => ({ success: true, scheduleId: 'schedule-1', status: 'paused' }),
+        },
+      ),
+    ).rejects.toThrow('The recurring lifecycle response could not be validated.');
+  });
+
+  it('rejects wrong returned scheduleId', async () => {
+    await expect(
+      pauseRecurringBillingScheduleV2(
+        session,
+        { communityId: 'community-1', scheduleId: 'schedule-1' },
+        {
+          resolveAuthority: async () => ({ ...session, community: session.community! }),
+          invokeCall: async () => ({ success: true, scheduleId: 'schedule-2', status: 'paused', lifecycleRevision: 1 }),
+        },
+      ),
+    ).rejects.toThrow('Recurring lifecycle response schedule ID did not match the request.');
+  });
+
+  it('rejects wrong returned lifecycle status', async () => {
+    await expect(
+      resumeRecurringBillingScheduleV2(
+        session,
+        { communityId: 'community-1', scheduleId: 'schedule-1' },
+        {
+          resolveAuthority: async () => ({ ...session, community: session.community! }),
+          invokeCall: async () => ({ success: true, scheduleId: 'schedule-1', status: 'paused', lifecycleRevision: 1 }),
+        },
+      ),
+    ).rejects.toThrow('Recurring lifecycle response status did not match the requested transition.');
+  });
+
+  it('rejects invalid lifecycleRevision values', async () => {
+    await expect(
+      stopRecurringBillingScheduleV2(
+        session,
+        { communityId: 'community-1', scheduleId: 'schedule-1' },
+        {
+          resolveAuthority: async () => ({ ...session, community: session.community! }),
+          invokeCall: async () => ({ success: true, scheduleId: 'schedule-1', status: 'stopped', lifecycleRevision: 0 }),
+        },
+      ),
+    ).rejects.toThrow('The recurring lifecycle response could not be validated.');
   });
 });
 

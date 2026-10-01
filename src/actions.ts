@@ -561,6 +561,53 @@ export interface CreateRecurringBillingScheduleV2Result {
   alreadyCompleted: boolean;
 }
 
+interface RecurringScopedIdentifiers {
+  buildingId?: string;
+  flatId?: string;
+  flatIds?: string[];
+}
+
+interface RecurringScheduleRequestBaseV2 {
+  scope: RecurringScheduleScopeV2;
+  generationDay: number;
+  dueDay: number;
+  startBillingPeriod: string;
+  endBillingPeriod: string | null;
+  chargeLines: RecurringScheduleChargeLineV2[];
+}
+
+export interface ReviseRecurringBillingScheduleV2RequestBase extends RecurringScheduleRequestBaseV2 {
+  communityId: string;
+  scheduleId: string;
+  expectedRevisionId: string;
+  idempotencyKey: string;
+  reason?: string;
+}
+
+export type ReviseRecurringBillingScheduleV2Request =
+  | (ReviseRecurringBillingScheduleV2RequestBase & { scope: 'community' })
+  | (ReviseRecurringBillingScheduleV2RequestBase & {
+      scope: 'building';
+      buildingId: string;
+    })
+  | (ReviseRecurringBillingScheduleV2RequestBase & {
+      scope: 'unit';
+      buildingId: string;
+      flatId: string;
+    })
+  | (ReviseRecurringBillingScheduleV2RequestBase & {
+      scope: 'units';
+      flatIds: string[];
+    });
+
+export interface ReviseRecurringBillingScheduleV2Result {
+  success: true;
+  scheduleId: string;
+  revisionId: string;
+  revisionNo: number;
+  alreadyCompleted: boolean;
+}
+
 export type RecurringLifecycleStatusV2 = 'active' | 'paused' | 'stopped';
 
 export interface RecurringLifecycleMutationRequestV2 {
@@ -636,6 +683,113 @@ function normalizeCustomChargeLabel(value: unknown): string {
   return normalized;
 }
 
+function normalizeRecurringChargeLines(value: unknown): RecurringScheduleChargeLineV2[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw Error('At least one recurring charge line is required.');
+  }
+  if (value.length > 20) {
+    throw Error('Recurring schedules can include at most 20 charge lines.');
+  }
+  let totalMinor = 0n;
+  const seenLineIds = new Set<string>();
+  const seenEffectiveLabels = new Set<string>();
+  const chargeLines: RecurringScheduleChargeLineV2[] = value.map((line, index) => {
+    if (!line || typeof line !== 'object' || Array.isArray(line)) {
+      throw Error(`Charge line ${index + 1} is invalid.`);
+    }
+    const item = line as Record<string, unknown>;
+    const lineId = recurringDocId(item.lineId, `Charge line ${index + 1} ID`);
+    if (seenLineIds.has(lineId)) throw Error('Recurring charge lines must use unique line IDs.');
+    seenLineIds.add(lineId);
+
+    const code = item.code;
+    if (
+      code !== 'maintenance' &&
+      code !== 'water' &&
+      code !== 'parking' &&
+      code !== 'service' &&
+      code !== 'electricity' &&
+      code !== 'security' &&
+      code !== 'other' &&
+      code !== 'custom'
+    ) {
+      throw Error(`Charge line ${index + 1} code is invalid.`);
+    }
+
+    const label =
+      code === 'custom'
+        ? normalizeCustomChargeLabel(item.label)
+        : recurringChargeCodeToLabel[code as Exclude<RecurringChargeCodeV2, 'custom'>];
+    if (code !== 'custom' && str(item.label) && str(item.label) !== label) {
+      throw Error(`Charge line ${index + 1} label must match the standard label for ${code}.`);
+    }
+
+    const labelKey = label.toLowerCase();
+    if (seenEffectiveLabels.has(labelKey)) {
+      throw Error('Recurring charge lines must use unique labels.');
+    }
+    seenEffectiveLabels.add(labelKey);
+
+    const amountMinor = item.amountMinor;
+    if (typeof amountMinor !== 'number' || !Number.isSafeInteger(amountMinor) || amountMinor <= 0) {
+      throw Error(`Charge line ${index + 1} amount is invalid.`);
+    }
+    totalMinor += BigInt(amountMinor);
+    if (totalMinor > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw Error('Recurring charge total exceeds the safe integer limit.');
+    }
+    return { lineId, code, label, amountMinor };
+  });
+  return [...chargeLines].sort((a, b) => a.lineId.localeCompare(b.lineId));
+}
+
+function normalizeRecurringScopedIdentifiers(
+  scope: RecurringScheduleScopeV2,
+  value: Record<string, unknown>,
+): RecurringScopedIdentifiers {
+  const rawBuildingId = value.buildingId;
+  const rawFlatId = value.flatId;
+  const rawFlatIds = value.flatIds;
+
+  const hasBuildingId = Object.hasOwn(value, 'buildingId');
+  const hasFlatId = Object.hasOwn(value, 'flatId');
+  const hasFlatIds = Object.hasOwn(value, 'flatIds');
+
+  if (scope === 'community') {
+    if (hasBuildingId || hasFlatId || hasFlatIds) {
+      throw Error('Community scope must omit buildingId, flatId, and flatIds.');
+    }
+    return {};
+  }
+  if (scope === 'building') {
+    if (!hasBuildingId) throw Error('Building scope must include buildingId.');
+    if (hasFlatId || hasFlatIds) throw Error('Building scope must omit flatId and flatIds.');
+    return { buildingId: recurringDocId(rawBuildingId, 'Building') };
+  }
+  if (scope === 'unit') {
+    if (!hasBuildingId || !hasFlatId) {
+      throw Error('Unit scope must include both buildingId and flatId.');
+    }
+    if (hasFlatIds) throw Error('Unit scope must omit flatIds.');
+    return {
+      buildingId: recurringDocId(rawBuildingId, 'Building'),
+      flatId: recurringDocId(rawFlatId, 'Unit'),
+    };
+  }
+  if (hasBuildingId || hasFlatId) {
+    throw Error('Selected units scope must omit buildingId and flatId.');
+  }
+  if (!hasFlatIds || !Array.isArray(rawFlatIds) || rawFlatIds.length === 0) {
+    throw Error('Selected units scope must include non-empty flatIds.');
+  }
+  if (rawFlatIds.length > 5000) throw Error('Selected units cannot exceed 5000.');
+  const deduped = [...new Set(rawFlatIds.map((id) => recurringDocId(id, 'Selected unit')))].sort((a, b) =>
+    a.localeCompare(b),
+  );
+  if (deduped.length > 5000) throw Error('Selected units cannot exceed 5000.');
+  return { flatIds: deduped };
+}
+
 function recurringDay(value: unknown, label: string): number {
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 28) {
     throw Error(`${label} must be an integer from 1 to 28.`);
@@ -708,71 +862,8 @@ export function normalizeRecurringBillingScheduleRequest(
     throw Error('End billing period must be the same as or after start billing period.');
   }
 
-  if (!Array.isArray(value.chargeLines) || value.chargeLines.length === 0) {
-    throw Error('At least one recurring charge line is required.');
-  }
-  if (value.chargeLines.length > 20) {
-    throw Error('Recurring schedules can include at most 20 charge lines.');
-  }
-  let totalMinor = 0n;
-  const seenLineIds = new Set<string>();
-  const seenEffectiveLabels = new Set<string>();
-  const chargeLines: RecurringScheduleChargeLineV2[] = value.chargeLines.map((line, index) => {
-    if (!line || typeof line !== 'object' || Array.isArray(line)) {
-      throw Error(`Charge line ${index + 1} is invalid.`);
-    }
-    const item = line as Record<string, unknown>;
-    const lineId = recurringDocId(item.lineId, `Charge line ${index + 1} ID`);
-    if (seenLineIds.has(lineId)) throw Error('Recurring charge lines must use unique line IDs.');
-    seenLineIds.add(lineId);
-
-    const code = item.code;
-    if (
-      code !== 'maintenance' &&
-      code !== 'water' &&
-      code !== 'parking' &&
-      code !== 'service' &&
-      code !== 'electricity' &&
-      code !== 'security' &&
-      code !== 'other' &&
-      code !== 'custom'
-    ) {
-      throw Error(`Charge line ${index + 1} code is invalid.`);
-    }
-
-    const label =
-      code === 'custom'
-        ? normalizeCustomChargeLabel(item.label)
-        : recurringChargeCodeToLabel[code as Exclude<RecurringChargeCodeV2, 'custom'>];
-    if (code !== 'custom' && str(item.label) && str(item.label) !== label) {
-      throw Error(`Charge line ${index + 1} label must match the standard label for ${code}.`);
-    }
-
-    const labelKey = label.toLowerCase();
-    if (seenEffectiveLabels.has(labelKey)) {
-      throw Error('Recurring charge lines must use unique labels.');
-    }
-    seenEffectiveLabels.add(labelKey);
-
-    const amountMinor = item.amountMinor;
-    if (typeof amountMinor !== 'number' || !Number.isSafeInteger(amountMinor) || amountMinor <= 0) {
-      throw Error(`Charge line ${index + 1} amount is invalid.`);
-    }
-    totalMinor += BigInt(amountMinor);
-    if (totalMinor > BigInt(Number.MAX_SAFE_INTEGER)) {
-      throw Error('Recurring charge total exceeds the safe integer limit.');
-    }
-    return { lineId, code, label, amountMinor };
-  });
-  const sortedChargeLines = [...chargeLines].sort((a, b) => a.lineId.localeCompare(b.lineId));
-
-  const rawBuildingId = value.buildingId;
-  const rawFlatId = value.flatId;
-  const rawFlatIds = value.flatIds;
-
-  const hasBuildingId = Object.hasOwn(value, 'buildingId');
-  const hasFlatId = Object.hasOwn(value, 'flatId');
-  const hasFlatIds = Object.hasOwn(value, 'flatIds');
+  const sortedChargeLines = normalizeRecurringChargeLines(value.chargeLines);
+  const scoped = normalizeRecurringScopedIdentifiers(scope, value);
 
   const base: CreateRecurringBillingScheduleV2RequestBase = {
     schemaVersion: 2,
@@ -788,41 +879,173 @@ export function normalizeRecurringBillingScheduleRequest(
   };
 
   if (scope === 'community') {
-    if (hasBuildingId || hasFlatId || hasFlatIds) {
-      throw Error('Community scope must omit buildingId, flatId, and flatIds.');
-    }
     return { ...base, scope: 'community' };
   } else if (scope === 'building') {
-    if (!hasBuildingId) throw Error('Building scope must include buildingId.');
-    if (hasFlatId || hasFlatIds) {
-      throw Error('Building scope must omit flatId and flatIds.');
-    }
-    return { ...base, scope: 'building', buildingId: recurringDocId(rawBuildingId, 'Building') };
+    return { ...base, scope: 'building', buildingId: scoped.buildingId! };
   } else if (scope === 'unit') {
-    if (!hasBuildingId || !hasFlatId) {
-      throw Error('Unit scope must include both buildingId and flatId.');
-    }
-    if (hasFlatIds) throw Error('Unit scope must omit flatIds.');
     return {
       ...base,
       scope: 'unit',
-      buildingId: recurringDocId(rawBuildingId, 'Building'),
-      flatId: recurringDocId(rawFlatId, 'Unit'),
+      buildingId: scoped.buildingId!,
+      flatId: scoped.flatId!,
     };
   } else {
-    if (hasBuildingId || hasFlatId) {
-      throw Error('Selected units scope must omit buildingId and flatId.');
-    }
-    if (!hasFlatIds || !Array.isArray(rawFlatIds) || rawFlatIds.length === 0) {
-      throw Error('Selected units scope must include non-empty flatIds.');
-    }
-    if (rawFlatIds.length > 5000) throw Error('Selected units cannot exceed 5000.');
-    const deduped = [...new Set(rawFlatIds.map((id) => recurringDocId(id, 'Selected unit')))].sort(
-      (a, b) => a.localeCompare(b),
-    );
-    if (deduped.length > 5000) throw Error('Selected units cannot exceed 5000.');
-    return { ...base, scope: 'units', flatIds: deduped };
+    return { ...base, scope: 'units', flatIds: scoped.flatIds! };
   }
+}
+
+function normalizeRecurringRevisionReason(value: unknown): string | undefined {
+  if (value == null) return undefined;
+  if (typeof value !== 'string') throw Error('Revision reason must be a string.');
+  const reason = value.trim();
+  if (!reason) return undefined;
+  if (reason.length > 300) throw Error('Revision reason must be 300 characters or fewer.');
+  return reason;
+}
+
+export function normalizeReviseRecurringBillingScheduleV2Request(
+  input: unknown,
+): ReviseRecurringBillingScheduleV2Request {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw Error('Recurring schedule revision request is invalid.');
+  }
+  const value = input as Record<string, unknown>;
+
+  for (const key of [
+    'schemaVersion',
+    'currency',
+    'frequency',
+    'status',
+    'revisionNo',
+    'generatedThroughBillingPeriod',
+    'generationInProgressBillingPeriod',
+  ]) {
+    if (Object.hasOwn(value, key)) {
+      throw Error(`Recurring schedule revision request contains unsupported field: ${key}.`);
+    }
+  }
+
+  const communityId = recurringDocId(value.communityId, 'Community');
+  const scheduleId = recurringDocId(value.scheduleId, 'Schedule');
+  const expectedRevisionId = recurringDocId(value.expectedRevisionId, 'Expected revision ID');
+  if (!isRecurringScheduleIdempotencyKeyV2(value.idempotencyKey)) {
+    throw Error('Recurring schedule revision idempotency key is invalid.');
+  }
+  const idempotencyKey = value.idempotencyKey;
+
+  const scope = value.scope;
+  if (scope !== 'community' && scope !== 'building' && scope !== 'unit' && scope !== 'units') {
+    throw Error('Recurring schedule scope is invalid.');
+  }
+
+  const generationDay = recurringDay(value.generationDay, 'Generation day');
+  const dueDay = recurringDay(value.dueDay, 'Due day');
+  if (dueDay < generationDay) throw Error('Due day must be the same as or after generation day.');
+
+  const startBillingPeriod = recurringBillingPeriod(value.startBillingPeriod, 'Start billing period');
+  if (!Object.hasOwn(value, 'endBillingPeriod')) {
+    throw Error('End billing period is required for recurring revision.');
+  }
+  const rawEnd = value.endBillingPeriod;
+  const endBillingPeriod =
+    rawEnd === null ? null : recurringBillingPeriod(rawEnd, 'End billing period');
+  if (endBillingPeriod && endBillingPeriod < startBillingPeriod) {
+    throw Error('End billing period must be the same as or after start billing period.');
+  }
+
+  const chargeLines = normalizeRecurringChargeLines(value.chargeLines);
+  const scoped = normalizeRecurringScopedIdentifiers(scope, value);
+  const reason = normalizeRecurringRevisionReason(value.reason);
+
+  const base: ReviseRecurringBillingScheduleV2RequestBase = {
+    communityId,
+    scheduleId,
+    expectedRevisionId,
+    idempotencyKey,
+    scope,
+    generationDay,
+    dueDay,
+    startBillingPeriod,
+    endBillingPeriod,
+    chargeLines,
+    ...(reason ? { reason } : {}),
+  };
+
+  if (scope === 'community') return { ...base, scope: 'community' };
+  if (scope === 'building') return { ...base, scope: 'building', buildingId: scoped.buildingId! };
+  if (scope === 'unit') {
+    return { ...base, scope: 'unit', buildingId: scoped.buildingId!, flatId: scoped.flatId! };
+  }
+  return { ...base, scope: 'units', flatIds: scoped.flatIds! };
+}
+
+function parseReviseRecurringBillingScheduleV2Result(
+  value: unknown,
+): ReviseRecurringBillingScheduleV2Result | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (
+    record.success !== true ||
+    !str(record.scheduleId) ||
+    !str(record.revisionId) ||
+    typeof record.revisionNo !== 'number' ||
+    !Number.isSafeInteger(record.revisionNo) ||
+    record.revisionNo < 2 ||
+    typeof record.alreadyCompleted !== 'boolean'
+  ) {
+    return null;
+  }
+  try {
+    recurringDocId(record.revisionId, 'Revision ID');
+  } catch {
+    return null;
+  }
+  return {
+    success: true,
+    scheduleId: str(record.scheduleId),
+    revisionId: str(record.revisionId),
+    revisionNo: record.revisionNo,
+    alreadyCompleted: record.alreadyCompleted,
+  };
+}
+
+export async function reviseRecurringBillingScheduleV2(
+  session: Session,
+  input: unknown,
+  dependencies: {
+    resolveAuthority?: typeof currentAuthority;
+    invokeCall?: (
+      name: string,
+      payload: ReviseRecurringBillingScheduleV2Request,
+    ) => Promise<unknown>;
+  } = {},
+): Promise<ReviseRecurringBillingScheduleV2Result> {
+  const resolveAuthority = dependencies.resolveAuthority || currentAuthority;
+  const invokeCall =
+    dependencies.invokeCall ??
+    ((name: string, payload: ReviseRecurringBillingScheduleV2Request) => call(name, { ...payload }));
+
+  const s = await resolveAuthority(session);
+  if (s.role !== 'admin' || s.profile.role !== 'admin') {
+    throw Error('An administrator is required.');
+  }
+  if (!s.community) throw Error('Select an authorized community.');
+
+  const payload = normalizeReviseRecurringBillingScheduleV2Request(input);
+  if (!s.profile.authorizedCommunityIds.includes(payload.communityId)) {
+    throw Error('Select an authorized community for recurring billing.');
+  }
+  if (payload.communityId !== s.community.id) {
+    throw Error('Recurring schedule community does not match your selected community.');
+  }
+
+  const response = await invokeCall('reviseBillingScheduleV2', payload);
+  const result = parseReviseRecurringBillingScheduleV2Result(response);
+  if (!result) throw Error('The recurring revision response could not be validated.');
+  if (result.scheduleId !== payload.scheduleId) {
+    throw Error('Recurring revision response schedule ID did not match the request.');
+  }
+  return result;
 }
 
 function parseCreateRecurringBillingScheduleV2Result(

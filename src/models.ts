@@ -215,9 +215,49 @@ export function classifyV2Bill(data: Data): V2BillClassification {
 export type V2RecurringScheduleStatus = 'active' | 'paused' | 'stopped';
 export type V2RecurringScheduleScope = 'community' | 'building' | 'unit' | 'units';
 const billingPeriodPattern = /^(\d{4})-(0[1-9]|1[0-2])$/;
+const recurringControlCharPattern = /[\u0000-\u001F\u007F]/;
+const recurringChargeCodeToLabel = {
+  maintenance: 'Maintenance',
+  water: 'Water',
+  parking: 'Parking',
+  service: 'Service',
+  electricity: 'Electricity',
+  security: 'Security',
+  other: 'Other',
+} as const;
+const recurringReservedLabels = new Set(
+  Object.values(recurringChargeCodeToLabel).map((value) => value.toLowerCase()),
+);
 
 export function isBillingPeriod(value: unknown): value is string {
   return typeof value === 'string' && billingPeriodPattern.test(value);
+}
+
+function utf8ByteLength(value: string): number {
+  return new TextEncoder().encode(value).length;
+}
+
+function isRecurringDocumentId(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value === value.trim() &&
+    !!value &&
+    utf8ByteLength(value) <= 128 &&
+    !value.includes('/') &&
+    !recurringControlCharPattern.test(value) &&
+    !/^\.{1,2}$/.test(value) &&
+    !/^__.*__$/.test(value)
+  );
+}
+
+function isRevisionBillingPeriod(value: unknown): value is string {
+  if (!isBillingPeriod(value)) return false;
+  const year = Number(value.slice(0, 4));
+  return year >= 2000 && year <= 2100;
+}
+
+function normalizeCustomRecurringChargeLabel(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
 }
 
 export function isV2RecurringSchedule(data: Data): boolean {
@@ -285,6 +325,99 @@ export function hasValidV2RecurringSchedule(data: Data, documentId?: string): bo
     (generatedThrough == null || isBillingPeriod(generatedThrough)) &&
     (inProgress == null || isBillingPeriod(inProgress))
   );
+}
+
+export function hasRevisionCompatibleV2RecurringSchedule(data: Data, documentId?: string): boolean {
+  if (!hasValidV2RecurringSchedule(data, documentId)) return false;
+  if (data.status !== 'active' && data.status !== 'paused') return false;
+  if (!isRecurringDocumentId(data.communityId)) return false;
+  if (documentId != null && !isRecurringDocumentId(documentId)) return false;
+  if (!isRecurringDocumentId(data.currentRevisionId)) return false;
+  if (!isRevisionBillingPeriod(data.startBillingPeriod)) return false;
+  if (data.endBillingPeriod != null && !isRevisionBillingPeriod(data.endBillingPeriod)) return false;
+
+  if (data.scope === 'building') {
+    if (!isRecurringDocumentId(data.buildingId)) return false;
+  } else if (data.scope === 'unit') {
+    if (!isRecurringDocumentId(data.buildingId) || !isRecurringDocumentId(data.flatId)) return false;
+  } else if (data.scope === 'units') {
+    const flatIds = data.flatIds;
+    if (
+      !Array.isArray(flatIds) ||
+      flatIds.length === 0 ||
+      flatIds.length > 5000 ||
+      flatIds.some((id) => !isRecurringDocumentId(id))
+    ) {
+      return false;
+    }
+
+    const normalizedFlatIds = [...new Set(flatIds as string[])].sort((a, b) =>
+      a.localeCompare(b),
+    );
+    if (
+      normalizedFlatIds.length !== flatIds.length ||
+      normalizedFlatIds.some((id, index) => id !== flatIds[index])
+    ) {
+      return false;
+    }
+  }
+
+  const chargeLines = data.chargeLines;
+  if (!Array.isArray(chargeLines) || chargeLines.length === 0 || chargeLines.length > 20) return false;
+  const seenLineIds = new Set<string>();
+  const seenEffectiveLabels = new Set<string>();
+  let totalMinor = 0n;
+  for (const line of chargeLines) {
+    if (!line || typeof line !== 'object' || Array.isArray(line)) return false;
+    const item = line as Data;
+    const lineId = item.lineId;
+    if (!isRecurringDocumentId(lineId) || seenLineIds.has(lineId)) return false;
+    seenLineIds.add(lineId);
+
+    const code = item.code;
+    if (
+      code !== 'maintenance' &&
+      code !== 'water' &&
+      code !== 'parking' &&
+      code !== 'service' &&
+      code !== 'electricity' &&
+      code !== 'security' &&
+      code !== 'other' &&
+      code !== 'custom'
+    ) {
+      return false;
+    }
+
+    if (typeof item.label !== 'string') return false;
+    const storedLabel = item.label;
+    let effectiveLabel = '';
+    if (code === 'custom') {
+      const normalized = normalizeCustomRecurringChargeLabel(storedLabel);
+      if (!normalized || normalized.length > 80) return false;
+      if (normalized !== storedLabel) return false;
+      if (recurringReservedLabels.has(normalized.toLowerCase())) return false;
+      effectiveLabel = normalized;
+    } else {
+      const canonical = recurringChargeCodeToLabel[code];
+      if (storedLabel !== canonical) return false;
+      effectiveLabel = canonical;
+    }
+
+    const labelKey = effectiveLabel.toLowerCase();
+    if (seenEffectiveLabels.has(labelKey)) return false;
+    seenEffectiveLabels.add(labelKey);
+
+    if (
+      typeof item.amountMinor !== 'number' ||
+      !Number.isSafeInteger(item.amountMinor) ||
+      item.amountMinor <= 0
+    ) {
+      return false;
+    }
+    totalMinor += BigInt(item.amountMinor);
+    if (totalMinor > BigInt(Number.MAX_SAFE_INTEGER)) return false;
+  }
+  return true;
 }
 
 export function recurringScheduleTotalMinor(data: Data): number | null {

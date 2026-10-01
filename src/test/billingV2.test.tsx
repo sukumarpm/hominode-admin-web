@@ -5,9 +5,11 @@ import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import {
   createRecurringBillingScheduleV2,
+  normalizeReviseRecurringBillingScheduleV2Request,
   normalizeRecurringBillingScheduleRequest,
   pauseRecurringBillingScheduleV2,
   parseRecurringAmountInrToMinorUnits,
+  reviseRecurringBillingScheduleV2,
   resumeRecurringBillingScheduleV2,
   stopRecurringBillingScheduleV2,
 } from '../actions';
@@ -36,6 +38,7 @@ import {
   CreateRecurringScheduleModal,
   recurringScheduleAttemptStorageKey,
 } from '../components/CreateRecurringScheduleModal';
+import { recurringScheduleRevisionAttemptStorageKey } from '../components/RecurringSchedules';
 import { AuthContext } from '../session';
 import { makeSession } from './fixtures';
 
@@ -474,6 +477,26 @@ function validRecurringSchedule(overrides: Partial<Data> = {}): Data {
   };
 }
 
+function validRevisionCompatibleRecurringSchedule(overrides: Partial<Data> = {}): Data {
+  return validRecurringSchedule({
+    chargeLines: [
+      {
+        lineId: 'line-maintenance',
+        code: 'maintenance',
+        label: 'Maintenance',
+        amountMinor: 250000,
+      },
+      {
+        lineId: 'line-custom-gym',
+        code: 'custom',
+        label: 'Gym Fee',
+        amountMinor: 5000,
+      },
+    ],
+    ...overrides,
+  });
+}
+
 describe('Admin Web recurring schedule dashboard', () => {
   it.each([
     ['active', 'Active'],
@@ -765,6 +788,19 @@ describe('Admin Web recurring schedule dashboard', () => {
     expect(screen.queryByRole('button', { name: 'Resume' })).toBeNull();
   });
 
+  it('shows Revise for active and paused revision-compatible schedules', () => {
+    const active = renderBilling([], [], {}, makeSession('admin'), {
+      rows: [row(validRevisionCompatibleRecurringSchedule({ status: 'active' }), 'schedule-1')],
+    });
+    expect(screen.getByRole('button', { name: 'Revise' })).toBeTruthy();
+    active.unmount();
+
+    renderBilling([], [], {}, makeSession('admin'), {
+      rows: [row(validRevisionCompatibleRecurringSchedule({ status: 'paused' }), 'schedule-1')],
+    });
+    expect(screen.getByRole('button', { name: 'Revise' })).toBeTruthy();
+  });
+
   it('shows Resume and Stop controls for paused schedules', () => {
     renderBilling(
       [],
@@ -799,6 +835,7 @@ describe('Admin Web recurring schedule dashboard', () => {
     expect(screen.queryByRole('button', { name: 'Pause' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Resume' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Revise' })).toBeNull();
   });
 
   it('keeps resident recurring dashboard free of lifecycle controls', () => {
@@ -815,6 +852,252 @@ describe('Admin Web recurring schedule dashboard', () => {
     expect(screen.queryByRole('button', { name: 'Pause' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Resume' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Revise' })).toBeNull();
+  });
+
+  it('does not show Revise for display-valid but revision-incompatible schedules', () => {
+    renderBilling([], [], {}, makeSession('admin'), {
+      rows: [row(validRecurringSchedule({ status: 'active' }), 'schedule-1')],
+    });
+    expect(screen.queryByRole('button', { name: 'Revise' })).toBeNull();
+  });
+
+  it('prepopulates revise modal with existing schedule terms', () => {
+    renderBilling(
+      [],
+      [],
+      {},
+      makeSession('admin'),
+      { rows: [row(validRevisionCompatibleRecurringSchedule({ status: 'active' }), 'schedule-1')] },
+      {
+        buildings: [row({ buildingName: 'Tower A' }, 'tower-1')],
+        units: [row({ buildingId: 'tower-1', flatLabel: '1203' }, 'unit-1')],
+      },
+    );
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Revise' })[0]);
+    expect(screen.getByText('Revise Recurring Schedule')).toBeTruthy();
+    expect(
+      (screen.getByLabelText('Scope') as HTMLSelectElement).value,
+    ).toBe('community');
+    expect(screen.getByDisplayValue('5')).toBeTruthy();
+    expect(screen.getByDisplayValue('20')).toBeTruthy();
+    expect(screen.getByDisplayValue('2026-09')).toBeTruthy();
+    expect(screen.getByText(/Current revision ID/i)).toBeTruthy();
+  });
+
+  it('preserves existing line IDs and generates unique IDs for new revision lines', async () => {
+    const reviseSpy = vi
+      .spyOn(actionsModule, 'reviseRecurringBillingScheduleV2')
+      .mockResolvedValue({
+        success: true,
+        scheduleId: 'schedule-1',
+        revisionId: 'rev-2',
+        revisionNo: 2,
+        alreadyCompleted: false,
+      });
+
+    renderBilling([], [], {}, makeSession('admin'), {
+      rows: [row(validRevisionCompatibleRecurringSchedule({ status: 'active' }), 'schedule-1')],
+    });
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Revise' })[0]);
+    fireEvent.click(screen.getByRole('button', { name: 'Add line' }));
+
+    const chargeTypeInputs = screen.getAllByLabelText('Charge type');
+    fireEvent.change(chargeTypeInputs[2], { target: { value: 'water' } });
+
+    const amountInputs = screen.getAllByLabelText('Amount (INR)');
+    fireEvent.change(amountInputs[2], { target: { value: '100' } });
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Revise' }).at(-1)!);
+    const sent = reviseSpy.mock.calls[0]?.[1] as Record<string, unknown>;
+    const lines = sent.chargeLines as Array<Record<string, unknown>>;
+    const ids = lines.map((line) => String(line.lineId));
+    expect(ids).toContain('line-maintenance');
+    expect(ids).toContain('line-custom-gym');
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(lines.some((line) => line.code === 'water')).toBe(true);
+
+    reviseSpy.mockRestore();
+  });
+
+  it('does not call revise callable when request persistence fails', () => {
+    const reviseSpy = vi
+      .spyOn(actionsModule, 'reviseRecurringBillingScheduleV2')
+      .mockResolvedValue({
+        success: true,
+        scheduleId: 'schedule-1',
+        revisionId: 'rev-2',
+        revisionNo: 2,
+        alreadyCompleted: false,
+      });
+    const setItemSpy = vi
+      .spyOn(Storage.prototype, 'setItem')
+      .mockImplementation(() => {
+        throw Error('quota exceeded');
+      });
+
+    renderBilling([], [], {}, makeSession('admin'), {
+      rows: [row(validRevisionCompatibleRecurringSchedule({ status: 'active' }), 'schedule-1')],
+    });
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Revise' })[0]);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Revise' }).at(-1)!);
+
+    expect(reviseSpy).toHaveBeenCalledTimes(0);
+    expect(
+      screen.getByText(
+        'Revision could not be submitted because its recovery request could not be saved. No revision request was sent.',
+      ),
+    ).toBeTruthy();
+
+    setItemSpy.mockRestore();
+    reviseSpy.mockRestore();
+  });
+
+  it('fails closed for unreadable saved revision data and requires explicit discard', async () => {
+    const storageKey = recurringScheduleRevisionAttemptStorageKey('admin-1', 'community-1', 'schedule-1');
+    localStorage.setItem(storageKey, '{bad-json');
+    const beforeRefreshCalls = vi.mocked(useAdminV2RecurringSchedules).mock.calls.length;
+
+    renderBilling([], [], {}, makeSession('admin'), {
+      rows: [row(validRevisionCompatibleRecurringSchedule({ status: 'active' }), 'schedule-1')],
+    });
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Revise' })[0]);
+    expect(screen.getByText('Unresolved Saved Revision')).toBeTruthy();
+    expect(screen.getByText(/saved revision request data for this schedule is unreadable/i)).toBeTruthy();
+    expect(screen.queryByText('Revise Recurring Schedule')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Retry Saved Revision' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Discard Saved Revision' }));
+    expect(screen.getByText(/Discarding removes the saved idempotent retry request/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm Discard' }));
+
+    expect(localStorage.getItem(storageKey)).toBeNull();
+    expect(await screen.findByText(/reopen a fresh revision from current authoritative schedule data/i)).toBeTruthy();
+    expect(vi.mocked(useAdminV2RecurringSchedules).mock.calls.length).toBeGreaterThan(beforeRefreshCalls);
+  });
+
+  it('blocks revision double-submit while new revision request is in progress', async () => {
+    let resolveSubmit!: (value: {
+      success: true;
+      scheduleId: string;
+      revisionId: string;
+      revisionNo: number;
+      alreadyCompleted: boolean;
+    }) => void;
+    const reviseSpy = vi
+      .spyOn(actionsModule, 'reviseRecurringBillingScheduleV2')
+      .mockImplementation(
+        () =>
+          new Promise<{
+            success: true;
+            scheduleId: string;
+            revisionId: string;
+            revisionNo: number;
+            alreadyCompleted: boolean;
+          }>((resolve) => {
+            resolveSubmit = resolve;
+          }),
+      );
+
+    renderBilling([], [], {}, makeSession('admin'), {
+      rows: [row(validRevisionCompatibleRecurringSchedule({ status: 'active' }), 'schedule-1')],
+    });
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Revise' })[0]);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Revise' }).at(-1)!);
+
+    const submittingButton = await screen.findByRole('button', {
+      name: 'Submitting revision…',
+    });
+    fireEvent.click(submittingButton);
+
+    expect(reviseSpy).toHaveBeenCalledTimes(1);
+
+    resolveSubmit({
+      success: true,
+      scheduleId: 'schedule-1',
+      revisionId: 'rev-2',
+      revisionNo: 2,
+      alreadyCompleted: false,
+    });
+
+    expect(
+      await screen.findByText('Recurring revision submitted successfully.'),
+    ).toBeTruthy();
+
+    reviseSpy.mockRestore();
+  });
+
+  it('persists new revision request before callable, retries exact saved payload, and preserves expectedRevisionId', async () => {
+    const reviseSpy = vi
+      .spyOn(actionsModule, 'reviseRecurringBillingScheduleV2')
+      .mockRejectedValueOnce(Error('network timeout'))
+      .mockResolvedValueOnce({
+        success: true,
+        scheduleId: 'schedule-1',
+        revisionId: 'rev-2',
+        revisionNo: 2,
+        alreadyCompleted: true,
+      });
+
+    renderBilling([], [], {}, makeSession('admin'), {
+      rows: [row(validRevisionCompatibleRecurringSchedule({ status: 'active' }), 'schedule-1')],
+    });
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Revise' })[0]);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Revise' }).at(-1)!);
+
+    const firstPayload = reviseSpy.mock.calls[0]?.[1] as Record<string, unknown>;
+    const firstKey = String(firstPayload.idempotencyKey);
+    const firstExpectedRevisionId = String(firstPayload.expectedRevisionId);
+    const key = recurringScheduleRevisionAttemptStorageKey('admin-1', 'community-1', 'schedule-1');
+    const savedRaw = localStorage.getItem(key);
+    expect(savedRaw).toBeTruthy();
+    expect(savedRaw || '').toContain(firstExpectedRevisionId);
+
+    expect(await screen.findByText(/could not be confirmed/i)).toBeTruthy();
+    fireEvent.click(screen.getAllByRole('button', { name: 'Revise' })[0]);
+    expect(screen.getByText('Unresolved Saved Revision')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry Saved Revision' }));
+
+    expect(
+      await screen.findByText(
+        'Recurring revision was already completed. Recovery succeeded.',
+      ),
+    ).toBeTruthy();
+
+    const retryPayload = reviseSpy.mock.calls[1]?.[1] as Record<string, unknown>;
+    expect(String(retryPayload.idempotencyKey)).toBe(firstKey);
+    expect(String(retryPayload.expectedRevisionId)).toBe(firstExpectedRevisionId);
+    expect(localStorage.getItem(key)).toBeNull();
+
+    reviseSpy.mockRestore();
+  });
+
+  it('shows explicit discard warning for unresolved saved revision', async () => {
+    const reviseSpy = vi
+      .spyOn(actionsModule, 'reviseRecurringBillingScheduleV2')
+      .mockRejectedValueOnce(Error('network timeout'));
+
+    renderBilling([], [], {}, makeSession('admin'), {
+      rows: [row(validRevisionCompatibleRecurringSchedule({ status: 'active' }), 'schedule-1')],
+    });
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Revise' })[0]);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Revise' }).at(-1)!);
+    expect(await screen.findByText(/could not be confirmed/i)).toBeTruthy();
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Revise' })[0]);
+    fireEvent.click(screen.getByRole('button', { name: 'Discard Saved Revision' }));
+    expect(screen.getByText(/Discarding removes the saved idempotent retry request/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm Discard' }));
+    expect(await screen.findByText(/Saved revision request discarded/i)).toBeTruthy();
+
+    reviseSpy.mockRestore();
   });
 
   it('routes Pause lifecycle action only to pause wrapper and refreshes on success', async () => {
@@ -946,32 +1229,27 @@ describe('Admin Web recurring schedule dashboard', () => {
       {},
       makeSession('admin'),
       {
-        rows: [
-          row(validRecurringSchedule({ status: 'active' }), 'schedule-1'),
-        ],
+        rows: [row(validRevisionCompatibleRecurringSchedule({ status: 'active' }), 'schedule-1')],
       },
     );
 
     expect(
       screen.getByRole('button', { name: 'Create Recurring Schedule' }),
     ).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Revise' })).toBeTruthy();
 
     for (const name of [
       'Edit',
-      'Revise',
-      'Pause',
-      'Resume',
       'Generate Now',
       'Retry',
       'Reconcile',
       'History',
     ]) {
-      if (['Pause', 'Resume'].includes(name)) continue;
       expect(screen.queryByRole('button', { name })).toBeNull();
     }
   });
 
-  it('does not introduce direct Firestore lifecycle writes in recurring schedules component', () => {
+  it('does not introduce direct Firestore writes for lifecycle or revision component flows', () => {
     const source = readFileSync(
       'src/components/RecurringSchedules.tsx',
       'utf8',
@@ -979,7 +1257,11 @@ describe('Admin Web recurring schedule dashboard', () => {
 
     expect(source).not.toMatch(/reviseBillingScheduleV2/);
     expect(source).not.toMatch(/generateBillingSchedule/);
-    expect(source).not.toMatch(/reconcile/);
+    expect(source).not.toContain('reserveBillingSchedulePeriodV2');
+    expect(source).not.toContain('executeBillingSchedulePeriodV2');
+    expect(source).not.toContain('Generate Now');
+    expect(source).not.toContain('reconcileBillingSchedulePeriodV2');
+    expect(source).not.toContain('Reconcile');
     expect(source).not.toMatch(/collection\(/);
     expect(source).not.toMatch(/doc\(/);
     expect(source).not.toMatch(/updateDoc\(/);
@@ -1317,6 +1599,242 @@ describe('Admin Web recurring lifecycle action contract', () => {
         },
       ),
     ).rejects.toThrow('The recurring lifecycle response could not be validated.');
+  });
+});
+
+function reviseRecurringRequest(overrides: Record<string, unknown> = {}) {
+  return normalizeReviseRecurringBillingScheduleV2Request({
+    communityId: 'community-1',
+    scheduleId: 'schedule-1',
+    expectedRevisionId: 'rev-current-1',
+    idempotencyKey: 'schedule_revise_key_1',
+    scope: 'community',
+    generationDay: 5,
+    dueDay: 20,
+    startBillingPeriod: '2026-10',
+    endBillingPeriod: null,
+    chargeLines: [
+      {
+        lineId: 'line-maintenance',
+        code: 'maintenance',
+        label: 'Maintenance',
+        amountMinor: 250000,
+      },
+    ],
+    ...overrides,
+  });
+}
+
+describe('Admin Web recurring revision action contract', () => {
+  it('normalizes revision request with exact allowed fields only', () => {
+    const payload = reviseRecurringRequest({ reason: '  update terms  ' });
+    expect(Object.keys(payload).sort()).toEqual([
+      'chargeLines',
+      'communityId',
+      'dueDay',
+      'endBillingPeriod',
+      'expectedRevisionId',
+      'generationDay',
+      'idempotencyKey',
+      'reason',
+      'scheduleId',
+      'scope',
+      'startBillingPeriod',
+    ]);
+    expect(payload.reason).toBe('update terms');
+  });
+
+  it('normalizes scope property presence for revision request', () => {
+    const community = reviseRecurringRequest({ scope: 'community' });
+    expect(Object.hasOwn(community, 'buildingId')).toBe(false);
+    expect(Object.hasOwn(community, 'flatId')).toBe(false);
+    expect(Object.hasOwn(community, 'flatIds')).toBe(false);
+
+    const building = reviseRecurringRequest({ scope: 'building', buildingId: 'tower-1' });
+    expect(Object.hasOwn(building, 'buildingId')).toBe(true);
+    expect(Object.hasOwn(building, 'flatId')).toBe(false);
+    expect(Object.hasOwn(building, 'flatIds')).toBe(false);
+
+    const unit = reviseRecurringRequest({
+      scope: 'unit',
+      buildingId: 'tower-1',
+      flatId: 'unit-1',
+    });
+    expect(Object.hasOwn(unit, 'buildingId')).toBe(true);
+    expect(Object.hasOwn(unit, 'flatId')).toBe(true);
+    expect(Object.hasOwn(unit, 'flatIds')).toBe(false);
+
+    const units = reviseRecurringRequest({ scope: 'units', flatIds: ['unit-2', 'unit-1', 'unit-2'] });
+    if (units.scope !== 'units') throw new Error('Expected units scope');
+    expect(Object.hasOwn(units, 'buildingId')).toBe(false);
+    expect(Object.hasOwn(units, 'flatId')).toBe(false);
+    expect(units.flatIds).toEqual(['unit-1', 'unit-2']);
+  });
+
+  it('keeps endBillingPeriod as own property with period or null', () => {
+    const openEnded = reviseRecurringRequest({ endBillingPeriod: null });
+    expect(Object.hasOwn(openEnded, 'endBillingPeriod')).toBe(true);
+    expect(openEnded.endBillingPeriod).toBeNull();
+
+    const bounded = reviseRecurringRequest({ endBillingPeriod: '2027-03' });
+    expect(Object.hasOwn(bounded, 'endBillingPeriod')).toBe(true);
+    expect(bounded.endBillingPeriod).toBe('2027-03');
+  });
+
+  it('rejects unsupported create/display fields in revision request', () => {
+    expect(() => reviseRecurringRequest({ schemaVersion: 2 })).toThrow(
+      'Recurring schedule revision request contains unsupported field: schemaVersion.',
+    );
+    expect(() => reviseRecurringRequest({ currency: 'INR' })).toThrow(
+      'Recurring schedule revision request contains unsupported field: currency.',
+    );
+    expect(() => reviseRecurringRequest({ frequency: 'monthly' })).toThrow(
+      'Recurring schedule revision request contains unsupported field: frequency.',
+    );
+  });
+
+  it('enforces reason max length and line constraints for revisions', () => {
+    expect(() => reviseRecurringRequest({ reason: 'x'.repeat(301) })).toThrow(
+      'Revision reason must be 300 characters or fewer.',
+    );
+    expect(() =>
+      reviseRecurringRequest({
+        chargeLines: [
+          { lineId: 'line-1', code: 'custom', label: 'Gym Fee', amountMinor: 1000 },
+          { lineId: 'line-1', code: 'water', label: 'Water', amountMinor: 2000 },
+        ],
+      }),
+    ).toThrow('Recurring charge lines must use unique line IDs.');
+    expect(() =>
+      reviseRecurringRequest({
+        chargeLines: [
+          { lineId: 'line-1', code: 'custom', label: 'Gym Fee', amountMinor: 1000 },
+          { lineId: 'line-2', code: 'custom', label: ' gym   fee ', amountMinor: 2000 },
+        ],
+      }),
+    ).toThrow('Recurring charge lines must use unique labels.');
+  });
+
+  it('calls reviseBillingScheduleV2 with strict response checks', async () => {
+    const session = makeSession('admin');
+    const payload = reviseRecurringRequest();
+    const invokeCall = vi.fn().mockResolvedValue({
+      success: true,
+      scheduleId: 'schedule-1',
+      revisionId: 'rev-2',
+      revisionNo: 2,
+      alreadyCompleted: false,
+    });
+
+    const result = await reviseRecurringBillingScheduleV2(session, payload, {
+      resolveAuthority: async () => ({ ...session, community: session.community! }),
+      invokeCall,
+    });
+    expect(invokeCall).toHaveBeenCalledWith('reviseBillingScheduleV2', payload);
+    expect(result.revisionNo).toBe(2);
+  });
+
+  it('rejects malformed revision responses', async () => {
+    const session = makeSession('admin');
+    const payload = reviseRecurringRequest();
+
+    await expect(
+      reviseRecurringBillingScheduleV2(session, payload, {
+        resolveAuthority: async () => ({ ...session, community: session.community! }),
+        invokeCall: async () => ({ success: true, scheduleId: 'schedule-1', revisionId: 'rev-2', revisionNo: 1, alreadyCompleted: false }),
+      }),
+    ).rejects.toThrow('The recurring revision response could not be validated.');
+
+    await expect(
+      reviseRecurringBillingScheduleV2(session, payload, {
+        resolveAuthority: async () => ({ ...session, community: session.community! }),
+        invokeCall: async () => ({ success: true, scheduleId: 'schedule-x', revisionId: 'rev-2', revisionNo: 2, alreadyCompleted: false }),
+      }),
+    ).rejects.toThrow('Recurring revision response schedule ID did not match the request.');
+  });
+
+  it('rejects invalid revisionId format', async () => {
+    const session = makeSession('admin');
+    const payload = reviseRecurringRequest();
+
+    await expect(
+      reviseRecurringBillingScheduleV2(session, payload, {
+        resolveAuthority: async () => ({ ...session, community: session.community! }),
+        invokeCall: async () => ({
+          success: true,
+          scheduleId: 'schedule-1',
+          revisionId: 'bad/revision/id',
+          revisionNo: 2,
+          alreadyCompleted: false,
+        }),
+      }),
+    ).rejects.toThrow('The recurring revision response could not be validated.');
+  });
+
+  it('rejects revisionNo lower than 2', async () => {
+    const session = makeSession('admin');
+    const payload = reviseRecurringRequest();
+
+    await expect(
+      reviseRecurringBillingScheduleV2(session, payload, {
+        resolveAuthority: async () => ({ ...session, community: session.community! }),
+        invokeCall: async () => ({
+          success: true,
+          scheduleId: 'schedule-1',
+          revisionId: 'rev-2',
+          revisionNo: 1,
+          alreadyCompleted: false,
+        }),
+      }),
+    ).rejects.toThrow('The recurring revision response could not be validated.');
+  });
+
+  it('rejects non-safe revisionNo values', async () => {
+    const session = makeSession('admin');
+    const payload = reviseRecurringRequest();
+
+    await expect(
+      reviseRecurringBillingScheduleV2(session, payload, {
+        resolveAuthority: async () => ({ ...session, community: session.community! }),
+        invokeCall: async () => ({
+          success: true,
+          scheduleId: 'schedule-1',
+          revisionId: 'rev-2',
+          revisionNo: Number.MAX_SAFE_INTEGER + 1,
+          alreadyCompleted: false,
+        }),
+      }),
+    ).rejects.toThrow('The recurring revision response could not be validated.');
+  });
+
+  it('rejects missing or non-boolean alreadyCompleted', async () => {
+    const session = makeSession('admin');
+    const payload = reviseRecurringRequest();
+
+    await expect(
+      reviseRecurringBillingScheduleV2(session, payload, {
+        resolveAuthority: async () => ({ ...session, community: session.community! }),
+        invokeCall: async () => ({
+          success: true,
+          scheduleId: 'schedule-1',
+          revisionId: 'rev-2',
+          revisionNo: 2,
+        }),
+      }),
+    ).rejects.toThrow('The recurring revision response could not be validated.');
+
+    await expect(
+      reviseRecurringBillingScheduleV2(session, payload, {
+        resolveAuthority: async () => ({ ...session, community: session.community! }),
+        invokeCall: async () => ({
+          success: true,
+          scheduleId: 'schedule-1',
+          revisionId: 'rev-2',
+          revisionNo: 2,
+          alreadyCompleted: 'false',
+        }),
+      }),
+    ).rejects.toThrow('The recurring revision response could not be validated.');
   });
 });
 

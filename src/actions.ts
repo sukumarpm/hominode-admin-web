@@ -506,6 +506,372 @@ export async function recordOfflinePaymentV2(
   return result;
 }
 
+export type RecurringScheduleScopeV2 = 'community' | 'building' | 'unit' | 'units';
+export type RecurringChargeCodeV2 =
+  | 'maintenance'
+  | 'water'
+  | 'parking'
+  | 'service'
+  | 'electricity'
+  | 'security'
+  | 'other'
+  | 'custom';
+
+export interface RecurringScheduleChargeLineV2 {
+  lineId: string;
+  code: RecurringChargeCodeV2;
+  label: string;
+  amountMinor: number;
+}
+
+interface CreateRecurringBillingScheduleV2RequestBase {
+  schemaVersion: 2;
+  communityId: string;
+  currency: 'INR';
+  frequency: 'monthly';
+  idempotencyKey: string;
+  generationDay: number;
+  dueDay: number;
+  startBillingPeriod: string;
+  endBillingPeriod: string | null;
+  chargeLines: RecurringScheduleChargeLineV2[];
+}
+
+export type CreateRecurringBillingScheduleV2Request =
+  | (CreateRecurringBillingScheduleV2RequestBase & { scope: 'community' })
+  | (CreateRecurringBillingScheduleV2RequestBase & {
+      scope: 'building';
+      buildingId: string;
+    })
+  | (CreateRecurringBillingScheduleV2RequestBase & {
+      scope: 'unit';
+      buildingId: string;
+      flatId: string;
+    })
+  | (CreateRecurringBillingScheduleV2RequestBase & {
+      scope: 'units';
+      flatIds: string[];
+    });
+
+export interface CreateRecurringBillingScheduleV2Result {
+  success: true;
+  scheduleId: string;
+  revisionId: string;
+  revisionNo: 1;
+  alreadyCompleted: boolean;
+}
+
+const recurringBillingPeriodPattern = /^(\d{4})-(0[1-9]|1[0-2])$/;
+const recurringIdempotencyKeyPattern = /^[A-Za-z0-9_-]{1,128}$/;
+const recurringControlCharPattern = /[\u0000-\u001F\u007F]/;
+const recurringChargeCodeToLabel: Record<Exclude<RecurringChargeCodeV2, 'custom'>, string> = {
+  maintenance: 'Maintenance',
+  water: 'Water',
+  parking: 'Parking',
+  service: 'Service',
+  electricity: 'Electricity',
+  security: 'Security',
+  other: 'Other',
+};
+const recurringReservedLabels = new Set(
+  Object.values(recurringChargeCodeToLabel).map((value) => value.toLowerCase()),
+);
+
+function utf8ByteLength(value: string): number {
+  return new TextEncoder().encode(value).length;
+}
+
+function recurringDocId(value: unknown, label: string): string {
+  if (typeof value !== 'string' || value !== value.trim()) {
+    throw Error(`${label} must be a valid document ID.`);
+  }
+  const id = str(value);
+  if (
+    !id ||
+    utf8ByteLength(id) > 128 ||
+    id.includes('/') ||
+    recurringControlCharPattern.test(id) ||
+    /^\.{1,2}$/.test(id) ||
+    /^__.*__$/.test(id)
+  ) {
+    throw Error(`${label} must be a valid document ID.`);
+  }
+  return id;
+}
+
+function recurringBillingPeriod(value: unknown, label: string): string {
+  const period = str(value);
+  if (!recurringBillingPeriodPattern.test(period)) throw Error(`${label} must be in YYYY-MM format.`);
+  const year = Number(period.slice(0, 4));
+  if (year < 2000 || year > 2100) {
+    throw Error(`${label} year must be between 2000 and 2100.`);
+  }
+  return period;
+}
+
+function normalizeCustomChargeLabel(value: unknown): string {
+  if (typeof value !== 'string') throw Error('Custom charge label is required.');
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (!normalized || normalized.length > 80) {
+    throw Error('Custom charge label must be 1 to 80 characters.');
+  }
+  if (recurringReservedLabels.has(normalized.toLowerCase())) {
+    throw Error('Custom charge label cannot reuse a standard charge label.');
+  }
+  return normalized;
+}
+
+function recurringDay(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 28) {
+    throw Error(`${label} must be an integer from 1 to 28.`);
+  }
+  return value;
+}
+
+export function isRecurringScheduleIdempotencyKeyV2(value: unknown): value is string {
+  return typeof value === 'string' && recurringIdempotencyKeyPattern.test(value);
+}
+
+export function createRecurringScheduleIdempotencyKeyV2(): string {
+  const cryptoApi = globalThis.crypto;
+  if (!cryptoApi || typeof cryptoApi.getRandomValues !== 'function') {
+    throw Error('Secure schedule attempt identifiers are unavailable.');
+  }
+  const bytes = new Uint8Array(24);
+  cryptoApi.getRandomValues(bytes);
+  return `schedule_${Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
+}
+
+export function parseRecurringAmountInrToMinorUnits(value: string): number | null {
+  if (typeof value !== 'string') return null;
+  const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(value.trim());
+  if (!match) return null;
+  try {
+    const rupees = BigInt(match[1]);
+    const paise = BigInt((match[2] || '').padEnd(2, '0') || '0');
+    const minor = rupees * 100n + paise;
+    return minor > 0n && minor <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(minor) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function normalizeRecurringBillingScheduleRequest(
+  input: unknown,
+): CreateRecurringBillingScheduleV2Request {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw Error('Recurring schedule request is invalid.');
+  }
+
+  const value = input as Record<string, unknown>;
+  if (value.schemaVersion !== 2) throw Error('Recurring schedule schemaVersion must be 2.');
+  if (value.currency !== 'INR') throw Error('Recurring schedule currency must be INR.');
+  if (value.frequency !== 'monthly') throw Error('Recurring schedule frequency must be monthly.');
+
+  const communityId = recurringDocId(value.communityId, 'Community');
+  if (!isRecurringScheduleIdempotencyKeyV2(value.idempotencyKey)) {
+    throw Error('Recurring schedule idempotency key is invalid.');
+  }
+  const idempotencyKey = value.idempotencyKey;
+
+  const scope = value.scope;
+  if (scope !== 'community' && scope !== 'building' && scope !== 'unit' && scope !== 'units') {
+    throw Error('Recurring schedule scope is invalid.');
+  }
+
+  const generationDay = recurringDay(value.generationDay, 'Generation day');
+  const dueDay = recurringDay(value.dueDay, 'Due day');
+  if (dueDay < generationDay) throw Error('Due day must be the same as or after generation day.');
+
+  const startBillingPeriod = recurringBillingPeriod(value.startBillingPeriod, 'Start billing period');
+  const rawEnd = value.endBillingPeriod;
+  const endBillingPeriod =
+    rawEnd == null || rawEnd === ''
+      ? null
+      : recurringBillingPeriod(rawEnd, 'End billing period');
+  if (endBillingPeriod && endBillingPeriod < startBillingPeriod) {
+    throw Error('End billing period must be the same as or after start billing period.');
+  }
+
+  if (!Array.isArray(value.chargeLines) || value.chargeLines.length === 0) {
+    throw Error('At least one recurring charge line is required.');
+  }
+  if (value.chargeLines.length > 20) {
+    throw Error('Recurring schedules can include at most 20 charge lines.');
+  }
+  let totalMinor = 0n;
+  const seenLineIds = new Set<string>();
+  const seenEffectiveLabels = new Set<string>();
+  const chargeLines: RecurringScheduleChargeLineV2[] = value.chargeLines.map((line, index) => {
+    if (!line || typeof line !== 'object' || Array.isArray(line)) {
+      throw Error(`Charge line ${index + 1} is invalid.`);
+    }
+    const item = line as Record<string, unknown>;
+    const lineId = recurringDocId(item.lineId, `Charge line ${index + 1} ID`);
+    if (seenLineIds.has(lineId)) throw Error('Recurring charge lines must use unique line IDs.');
+    seenLineIds.add(lineId);
+
+    const code = item.code;
+    if (
+      code !== 'maintenance' &&
+      code !== 'water' &&
+      code !== 'parking' &&
+      code !== 'service' &&
+      code !== 'electricity' &&
+      code !== 'security' &&
+      code !== 'other' &&
+      code !== 'custom'
+    ) {
+      throw Error(`Charge line ${index + 1} code is invalid.`);
+    }
+
+    const label =
+      code === 'custom'
+        ? normalizeCustomChargeLabel(item.label)
+        : recurringChargeCodeToLabel[code as Exclude<RecurringChargeCodeV2, 'custom'>];
+    if (code !== 'custom' && str(item.label) && str(item.label) !== label) {
+      throw Error(`Charge line ${index + 1} label must match the standard label for ${code}.`);
+    }
+
+    const labelKey = label.toLowerCase();
+    if (seenEffectiveLabels.has(labelKey)) {
+      throw Error('Recurring charge lines must use unique labels.');
+    }
+    seenEffectiveLabels.add(labelKey);
+
+    const amountMinor = item.amountMinor;
+    if (typeof amountMinor !== 'number' || !Number.isSafeInteger(amountMinor) || amountMinor <= 0) {
+      throw Error(`Charge line ${index + 1} amount is invalid.`);
+    }
+    totalMinor += BigInt(amountMinor);
+    if (totalMinor > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw Error('Recurring charge total exceeds the safe integer limit.');
+    }
+    return { lineId, code, label, amountMinor };
+  });
+  const sortedChargeLines = [...chargeLines].sort((a, b) => a.lineId.localeCompare(b.lineId));
+
+  const rawBuildingId = value.buildingId;
+  const rawFlatId = value.flatId;
+  const rawFlatIds = value.flatIds;
+
+  const hasBuildingId = Object.hasOwn(value, 'buildingId');
+  const hasFlatId = Object.hasOwn(value, 'flatId');
+  const hasFlatIds = Object.hasOwn(value, 'flatIds');
+
+  const base: CreateRecurringBillingScheduleV2RequestBase = {
+    schemaVersion: 2,
+    communityId,
+    currency: 'INR',
+    frequency: 'monthly',
+    idempotencyKey,
+    generationDay,
+    dueDay,
+    startBillingPeriod,
+    endBillingPeriod,
+    chargeLines: sortedChargeLines,
+  };
+
+  if (scope === 'community') {
+    if (hasBuildingId || hasFlatId || hasFlatIds) {
+      throw Error('Community scope must omit buildingId, flatId, and flatIds.');
+    }
+    return { ...base, scope: 'community' };
+  } else if (scope === 'building') {
+    if (!hasBuildingId) throw Error('Building scope must include buildingId.');
+    if (hasFlatId || hasFlatIds) {
+      throw Error('Building scope must omit flatId and flatIds.');
+    }
+    return { ...base, scope: 'building', buildingId: recurringDocId(rawBuildingId, 'Building') };
+  } else if (scope === 'unit') {
+    if (!hasBuildingId || !hasFlatId) {
+      throw Error('Unit scope must include both buildingId and flatId.');
+    }
+    if (hasFlatIds) throw Error('Unit scope must omit flatIds.');
+    return {
+      ...base,
+      scope: 'unit',
+      buildingId: recurringDocId(rawBuildingId, 'Building'),
+      flatId: recurringDocId(rawFlatId, 'Unit'),
+    };
+  } else {
+    if (hasBuildingId || hasFlatId) {
+      throw Error('Selected units scope must omit buildingId and flatId.');
+    }
+    if (!hasFlatIds || !Array.isArray(rawFlatIds) || rawFlatIds.length === 0) {
+      throw Error('Selected units scope must include non-empty flatIds.');
+    }
+    if (rawFlatIds.length > 5000) throw Error('Selected units cannot exceed 5000.');
+    const deduped = [...new Set(rawFlatIds.map((id) => recurringDocId(id, 'Selected unit')))].sort(
+      (a, b) => a.localeCompare(b),
+    );
+    if (deduped.length > 5000) throw Error('Selected units cannot exceed 5000.');
+    return { ...base, scope: 'units', flatIds: deduped };
+  }
+}
+
+function parseCreateRecurringBillingScheduleV2Result(
+  value: unknown,
+): CreateRecurringBillingScheduleV2Result | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (
+    record.success !== true ||
+    !str(record.scheduleId) ||
+    !str(record.revisionId) ||
+    record.revisionNo !== 1 ||
+    typeof record.alreadyCompleted !== 'boolean'
+  ) {
+    return null;
+  }
+  return {
+    success: true,
+    scheduleId: str(record.scheduleId),
+    revisionId: str(record.revisionId),
+    revisionNo: 1,
+    alreadyCompleted: record.alreadyCompleted,
+  };
+}
+
+export async function createRecurringBillingScheduleV2(
+  session: Session,
+  input: unknown,
+  dependencies: {
+    resolveAuthority?: typeof currentAuthority;
+    invokeCall?: (
+      name: string,
+      payload: CreateRecurringBillingScheduleV2Request,
+    ) => Promise<unknown>;
+  } = {},
+): Promise<CreateRecurringBillingScheduleV2Result> {
+  const resolveAuthority = dependencies.resolveAuthority || currentAuthority;
+  const invokeCall =
+    dependencies.invokeCall ??
+    ((name: string, payload: CreateRecurringBillingScheduleV2Request) =>
+      call(name, { ...payload }));
+
+  const s = await resolveAuthority(session);
+  if (s.role !== 'admin' || s.profile.role !== 'admin') {
+    throw Error('An administrator is required.');
+  }
+  if (!s.community) throw Error('Select an authorized community.');
+
+  const payload = normalizeRecurringBillingScheduleRequest(input);
+  if (!s.profile.authorizedCommunityIds.includes(payload.communityId)) {
+    throw Error('Select an authorized community for recurring billing.');
+  }
+  if (payload.communityId !== s.community.id) {
+    throw Error('Recurring schedule community does not match your selected community.');
+  }
+
+  const response = await invokeCall('createBillingScheduleV2', payload);
+  const result = parseCreateRecurringBillingScheduleV2Result(response);
+  if (!result) {
+    throw Error('The recurring schedule response could not be validated.');
+  }
+  return result;
+}
+
 function required(v: string, label: string) {
   if (!v.trim()) throw Error(label + ' is required.');
   return v.trim();

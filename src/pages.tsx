@@ -34,6 +34,7 @@ import {
 } from './actions';
 import { AdminCreateButtons, ResidentReview } from './AdminTools';
 import { BillingCreateModal } from './BillingCreateModal';
+import { CreateRecurringScheduleModal } from './components/CreateRecurringScheduleModal';
 import { CommunityPaymentSettings } from './CommunityPaymentSettings';
 import {
   paymentAttributionLabel,
@@ -479,6 +480,7 @@ function ScopedModule({
     [categoryFilter, setCategoryFilter] = useState('all'),
     [sortBy, setSortBy] = useState('name'),
     [page, setPage] = useState(0);
+  const [createRecurringOpen, setCreateRecurringOpen] = useState(false);
   const [params, setParams] = useSearchParams();
   const { entitlement } = useSubscription();
 
@@ -604,6 +606,11 @@ function ScopedModule({
             <Link className="outline-link" to={base + 'payments'}>
               Payments <ArrowRight size={16} />
             </Link>
+          )}
+          {module === 'billing' && s.role === 'admin' && (
+            <button type="button" onClick={() => setCreateRecurringOpen(true)}>
+              Create Recurring Schedule
+            </button>
           )}
           {module === 'buildings' && (
             <Link className="outline-link" to={base + 'units'}>
@@ -1185,6 +1192,13 @@ function ScopedModule({
           startEditing={params.get('edit') === '1'}
         />
       )}{' '}
+      {module === 'billing' && s.role === 'admin' && createRecurringOpen && (
+        <CreateRecurringScheduleModal
+          s={s}
+          onClose={() => setCreateRecurringOpen(false)}
+          onCreated={() => setRevision((value) => value + 1)}
+        />
+      )}
       {create &&
         (module === 'facilities' ? (
           <FacilityForm s={s} onClose={close} onSaved={facilitySaved} />

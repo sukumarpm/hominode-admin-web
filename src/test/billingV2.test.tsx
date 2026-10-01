@@ -4,6 +4,11 @@ import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  createRecurringBillingScheduleV2,
+  normalizeRecurringBillingScheduleRequest,
+  parseRecurringAmountInrToMinorUnits,
+} from '../actions';
+import {
   useAdminV2PaymentProofs,
   useAdminV2RecurringSchedules,
   useRows,
@@ -23,6 +28,10 @@ import {
   type Row,
 } from '../models';
 import { ModulePage, V2BillFinancialSummary } from '../pages';
+import {
+  CreateRecurringScheduleModal,
+  recurringScheduleAttemptStorageKey,
+} from '../components/CreateRecurringScheduleModal';
 import { AuthContext } from '../session';
 import { makeSession } from './fixtures';
 
@@ -76,9 +85,10 @@ function renderBilling(
   proofState: Partial<Resource> = {},
   session = makeSession('admin'),
   scheduleState: Partial<Resource> = {},
+  moduleRows: Partial<Record<Module, Row[]>> = {},
 ) {
   vi.mocked(useRows).mockImplementation((_session, module: Module): Resource => ({
-    rows: module === 'billing' ? rows : [],
+    rows: moduleRows[module] ?? (module === 'billing' ? rows : []),
     loading: false,
     error: '',
   }));
@@ -140,6 +150,14 @@ function renderPayments(v1Rows: Row[], v2Rows: Row[]) {
       </AuthContext>
     </MemoryRouter>,
   );
+}
+
+function mockRows(moduleRows: Partial<Record<Module, Row[]>> = {}) {
+  vi.mocked(useRows).mockImplementation((_session, module: Module): Resource => ({
+    rows: moduleRows[module] ?? [],
+    loading: false,
+    error: '',
+  }));
 }
 
 describe('Admin Web Billing V2 bill foundation', () => {
@@ -725,7 +743,7 @@ describe('Admin Web recurring schedule dashboard', () => {
     ).toBe(false);
   });
 
-  it('contains no recurring mutation controls in this read-only phase', () => {
+  it('exposes only recurring create control in this phase', () => {
     renderBilling(
       [],
       [],
@@ -738,8 +756,11 @@ describe('Admin Web recurring schedule dashboard', () => {
       },
     );
 
+    expect(
+      screen.getByRole('button', { name: 'Create Recurring Schedule' }),
+    ).toBeTruthy();
+
     for (const name of [
-      'Create Recurring Schedule',
       'Edit',
       'Pause',
       'Resume',
@@ -766,5 +787,377 @@ describe('Admin Web recurring schedule dashboard', () => {
     expect(source).not.toMatch(/resumeBillingScheduleV2/);
     expect(source).not.toMatch(/stopBillingScheduleV2/);
     expect(source).not.toMatch(/\bcall\s*\(/);
+  });
+});
+
+function recurringCreateRequest(
+  overrides: Record<string, unknown> = {},
+) {
+  return normalizeRecurringBillingScheduleRequest({
+    schemaVersion: 2,
+    communityId: 'community-1',
+    currency: 'INR',
+    frequency: 'monthly',
+    idempotencyKey: 'schedule_test_key_1',
+    scope: 'community',
+    generationDay: 1,
+    dueDay: 1,
+    startBillingPeriod: '2026-10',
+    endBillingPeriod: null,
+    chargeLines: [
+      {
+        lineId: 'line-1',
+        code: 'maintenance',
+        label: 'Maintenance',
+        amountMinor: 10000,
+      },
+    ],
+    ...overrides,
+  });
+}
+
+describe('Admin Web recurring schedule create action contract', () => {
+  it('calls createBillingScheduleV2 with normalized schemaVersion 2 INR monthly payload', async () => {
+    const session = makeSession('admin');
+    const payload = recurringCreateRequest({
+      dueDay: 20,
+      chargeLines: [
+        { lineId: 'line-b', code: 'security', label: 'Security', amountMinor: 2500 },
+        { lineId: 'line-a', code: 'maintenance', label: 'Maintenance', amountMinor: 10000 },
+      ],
+    });
+    const invokeCall = vi.fn().mockResolvedValue({
+      success: true,
+      scheduleId: 'schedule-1',
+      revisionId: 'rev-1',
+      revisionNo: 1,
+      alreadyCompleted: false,
+    });
+
+    const result = await createRecurringBillingScheduleV2(session, payload, {
+      resolveAuthority: async () => ({ ...session, community: session.community! }),
+      invokeCall,
+    });
+
+    expect(invokeCall).toHaveBeenCalledWith('createBillingScheduleV2', payload);
+    expect((invokeCall.mock.calls[0]?.[1] as Record<string, unknown>).schemaVersion).toBe(2);
+    expect((invokeCall.mock.calls[0]?.[1] as Record<string, unknown>).currency).toBe('INR');
+    expect((invokeCall.mock.calls[0]?.[1] as Record<string, unknown>).frequency).toBe('monthly');
+    expect(payload.chargeLines.map((line) => line.lineId)).toEqual(['line-a', 'line-b']);
+    expect(result).toEqual({
+      success: true,
+      scheduleId: 'schedule-1',
+      revisionId: 'rev-1',
+      revisionNo: 1,
+      alreadyCompleted: false,
+    });
+  });
+
+  it('normalizes scope property presence for community', () => {
+    const payload = recurringCreateRequest({ scope: 'community' });
+    expect(payload.scope).toBe('community');
+    expect(Object.hasOwn(payload, 'buildingId')).toBe(false);
+    expect(Object.hasOwn(payload, 'flatId')).toBe(false);
+    expect(Object.hasOwn(payload, 'flatIds')).toBe(false);
+  });
+
+  it('normalizes scope property presence for building', () => {
+    const payload = recurringCreateRequest({ scope: 'building', buildingId: 'tower-1' });
+    expect(payload.scope).toBe('building');
+    expect(Object.hasOwn(payload, 'buildingId')).toBe(true);
+    expect(Object.hasOwn(payload, 'flatId')).toBe(false);
+    expect(Object.hasOwn(payload, 'flatIds')).toBe(false);
+  });
+
+  it('normalizes scope property presence for unit', () => {
+    const payload = recurringCreateRequest({
+      scope: 'unit',
+      buildingId: 'tower-1',
+      flatId: 'unit-1',
+    });
+    expect(payload.scope).toBe('unit');
+    expect(Object.hasOwn(payload, 'buildingId')).toBe(true);
+    expect(Object.hasOwn(payload, 'flatId')).toBe(true);
+    expect(Object.hasOwn(payload, 'flatIds')).toBe(false);
+  });
+
+  it('normalizes scope property presence for units', () => {
+    const payload = recurringCreateRequest({ scope: 'units', flatIds: ['unit-2', 'unit-1'] });
+    expect(payload.scope).toBe('units');
+    expect(Object.hasOwn(payload, 'buildingId')).toBe(false);
+    expect(Object.hasOwn(payload, 'flatId')).toBe(false);
+    expect(Object.hasOwn(payload, 'flatIds')).toBe(true);
+  });
+
+  it('accepts selected units across buildings without requiring buildingId', () => {
+    const payload = recurringCreateRequest({
+      scope: 'units',
+      flatIds: ['tower-b-unit-2204', 'tower-a-unit-101', 'tower-b-unit-2204'],
+    });
+    expect(payload.scope).toBe('units');
+    if (payload.scope !== 'units') throw new Error('Expected units scope.');
+    expect(payload.flatIds).toEqual(['tower-a-unit-101', 'tower-b-unit-2204']);
+  });
+
+  it('normalizes standard and custom charge payloads', () => {
+    const payload = recurringCreateRequest({
+      chargeLines: [
+        {
+          lineId: 'line-2',
+          code: 'custom',
+          label: '  Gym   Fee ',
+          amountMinor: 250,
+        },
+        {
+          lineId: 'line-1',
+          code: 'water',
+          label: 'Water',
+          amountMinor: 10000,
+        },
+      ],
+    });
+    expect(payload.chargeLines).toEqual([
+      { lineId: 'line-1', code: 'water', label: 'Water', amountMinor: 10000 },
+      { lineId: 'line-2', code: 'custom', label: 'Gym Fee', amountMinor: 250 },
+    ]);
+  });
+
+  it('rejects duplicate lineId, duplicate labels, and reserved custom labels', () => {
+    expect(() =>
+      recurringCreateRequest({
+        chargeLines: [
+          { lineId: 'line-1', code: 'maintenance', label: 'Maintenance', amountMinor: 10000 },
+          { lineId: 'line-1', code: 'water', label: 'Water', amountMinor: 1000 },
+        ],
+      }),
+    ).toThrow('Recurring charge lines must use unique line IDs.');
+
+    expect(() =>
+      recurringCreateRequest({
+        chargeLines: [
+          { lineId: 'line-1', code: 'custom', label: 'Gym Fee', amountMinor: 10000 },
+          { lineId: 'line-2', code: 'custom', label: ' gym    fee ', amountMinor: 1000 },
+        ],
+      }),
+    ).toThrow('Recurring charge lines must use unique labels.');
+
+    expect(() =>
+      recurringCreateRequest({
+        chargeLines: [
+          { lineId: 'line-1', code: 'custom', label: 'maintenance', amountMinor: 10000 },
+        ],
+      }),
+    ).toThrow('Custom charge label cannot reuse a standard charge label.');
+  });
+
+  it('rejects more than 20 charge lines', () => {
+    const lines = Array.from({ length: 21 }, (_, index) => ({
+      lineId: `line-${index + 1}`,
+      code: 'custom',
+      label: `Custom ${index + 1}`,
+      amountMinor: 100,
+    }));
+    expect(() => recurringCreateRequest({ chargeLines: lines })).toThrow(
+      'Recurring schedules can include at most 20 charge lines.',
+    );
+  });
+
+  it.each([
+    [{ generationDay: 0 }, 'Generation day must be an integer from 1 to 28.'],
+    [{ dueDay: 29 }, 'Due day must be an integer from 1 to 28.'],
+    [{ generationDay: 10, dueDay: 9 }, 'Due day must be the same as or after generation day.'],
+    [{ startBillingPeriod: '2026-13' }, 'Start billing period must be in YYYY-MM format.'],
+    [{ startBillingPeriod: '1999-12' }, 'Start billing period year must be between 2000 and 2100.'],
+    [{ startBillingPeriod: '2101-01' }, 'Start billing period year must be between 2000 and 2100.'],
+    [
+      { endBillingPeriod: '2026-01', startBillingPeriod: '2026-10' },
+      'End billing period must be the same as or after start billing period.',
+    ],
+    [{ communityId: 'bad\nid' }, 'Community must be a valid document ID.'],
+  ])('rejects invalid recurring schedule shape %#', (overrides, message) => {
+    expect(() => recurringCreateRequest(overrides)).toThrow(message);
+  });
+
+  it('maps open-ended end period to null', () => {
+    const payload = recurringCreateRequest({ endBillingPeriod: null });
+    expect(payload.endBillingPeriod).toBeNull();
+  });
+
+  it('rejects malformed callable responses', async () => {
+    const session = makeSession('admin');
+    await expect(
+      createRecurringBillingScheduleV2(session, recurringCreateRequest(), {
+        resolveAuthority: async () => ({ ...session, community: session.community! }),
+        invokeCall: async () => ({ success: true, scheduleId: '', revisionId: 'rev', revisionNo: 1, alreadyCompleted: false }),
+      }),
+    ).rejects.toThrow('The recurring schedule response could not be validated.');
+  });
+});
+
+describe('Admin Web recurring INR parser', () => {
+  it.each([
+    ['100', 10000],
+    ['100.5', 10050],
+    ['100.50', 10050],
+  ])('parses %s into minor units', (input, expected) => {
+    expect(parseRecurringAmountInrToMinorUnits(input)).toBe(expected);
+  });
+
+  it.each(['', '0', '-1', '1.234', '1e2', '1,000.00'])('rejects invalid amount %s', (input) => {
+    expect(parseRecurringAmountInrToMinorUnits(input)).toBeNull();
+  });
+
+  it('rejects numeric overflow and aggregate overflow', () => {
+    expect(parseRecurringAmountInrToMinorUnits('90071992547409.92')).toBeNull();
+    expect(() =>
+      recurringCreateRequest({
+        chargeLines: [
+          {
+            lineId: 'line-1',
+            code: 'custom',
+            label: 'A',
+            amountMinor: Number.MAX_SAFE_INTEGER,
+          },
+          {
+            lineId: 'line-2',
+            code: 'custom',
+            label: 'B',
+            amountMinor: 1,
+          },
+        ],
+      }),
+    ).toThrow('Recurring charge total exceeds the safe integer limit.');
+  });
+});
+
+describe('Admin Web recurring schedule create modal', () => {
+  it('shows Create Recurring Schedule to admins and hides it for residents', () => {
+    const adminView = renderBilling([], [], {}, makeSession('admin'));
+    expect(screen.getByRole('button', { name: 'Create Recurring Schedule' })).toBeTruthy();
+    adminView.unmount();
+
+    renderBilling([], [], {}, makeSession('resident'));
+    expect(screen.queryByRole('button', { name: 'Create Recurring Schedule' })).toBeNull();
+  });
+
+  it('blocks double submit and persists unresolved request before callable', async () => {
+    mockRows();
+    const session = makeSession('admin');
+    const saved: ReturnType<typeof recurringCreateRequest>[] = [];
+    const savedKeys: string[] = [];
+    let resolveSubmit!: (value: {
+      success: true;
+      scheduleId: string;
+      revisionId: string;
+      revisionNo: 1;
+      alreadyCompleted: boolean;
+    }) => void;
+    const submitSchedule = vi.fn(
+      () =>
+        new Promise<{ success: true; scheduleId: string; revisionId: string; revisionNo: 1; alreadyCompleted: boolean }>((resolve) => {
+          resolveSubmit = resolve;
+        }),
+    );
+
+    render(
+      <CreateRecurringScheduleModal
+        s={session}
+        onClose={vi.fn()}
+        onCreated={vi.fn()}
+        loadAttempt={() => null}
+        saveAttempt={(storageKey, attempt) => {
+          savedKeys.push(storageKey);
+          saved.push(attempt);
+        }}
+        clearAttempt={vi.fn()}
+        createIdempotencyKey={() => 'schedule_modal_key'}
+        submitSchedule={submitSchedule}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText('Amount (INR)'), { target: { value: '100.50' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create Recurring Schedule' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Submitting…' }));
+
+    expect(saved).toHaveLength(1);
+    expect(saved[0].idempotencyKey).toBe('schedule_modal_key');
+    expect(saved[0].chargeLines[0].lineId).toBe('line-1');
+    expect(savedKeys).toEqual([recurringScheduleAttemptStorageKey('admin-1', 'community-1')]);
+    expect(submitSchedule).toHaveBeenCalledTimes(1);
+
+    resolveSubmit({
+      success: true,
+      scheduleId: 'schedule-1',
+      revisionId: 'rev-1',
+      revisionNo: 1,
+      alreadyCompleted: false,
+    });
+  });
+
+  it('retains unresolved request/key on ambiguous failure and retries exact payload', async () => {
+    mockRows();
+    const session = makeSession('admin');
+    const savedPayload = recurringCreateRequest({ idempotencyKey: 'schedule_saved_key' });
+    const submitSchedule = vi
+      .fn()
+      .mockRejectedValueOnce(Error('network timeout'))
+      .mockResolvedValueOnce({
+        success: true,
+        scheduleId: 'schedule-1',
+        revisionId: 'rev-1',
+        revisionNo: 1,
+        alreadyCompleted: true,
+      });
+    const clearAttempt = vi.fn();
+    const onCreated = vi.fn();
+
+    render(
+      <CreateRecurringScheduleModal
+        s={session}
+        onClose={vi.fn()}
+        onCreated={onCreated}
+        loadAttempt={() => savedPayload}
+        saveAttempt={vi.fn()}
+        clearAttempt={clearAttempt}
+        submitSchedule={submitSchedule}
+      />,
+    );
+
+    expect(screen.getByText('Unresolved Recurring Schedule Request')).toBeTruthy();
+    expect(screen.queryByLabelText('Scope')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry Saved Request' }));
+    expect(submitSchedule).toHaveBeenCalledWith(session, savedPayload);
+    expect(await screen.findByText(/unresolved/i)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry Saved Request' }));
+    expect(submitSchedule).toHaveBeenLastCalledWith(session, savedPayload);
+    expect(await screen.findByText(/already completed/i)).toBeTruthy();
+    expect(clearAttempt).toHaveBeenCalledTimes(1);
+    expect(clearAttempt).toHaveBeenCalledWith(recurringScheduleAttemptStorageKey('admin-1', 'community-1'));
+    expect(onCreated).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses unresolved storage keys scoped by admin uid and community', () => {
+    expect(recurringScheduleAttemptStorageKey('admin-1', 'community-1')).toBe(
+      'hominode.billingV2.createRecurringSchedule.unresolved:admin-1:community-1',
+    );
+    expect(recurringScheduleAttemptStorageKey('admin-1', 'community-2')).toBe(
+      'hominode.billingV2.createRecurringSchedule.unresolved:admin-1:community-2',
+    );
+    expect(recurringScheduleAttemptStorageKey('admin-2', 'community-1')).toBe(
+      'hominode.billingV2.createRecurringSchedule.unresolved:admin-2:community-1',
+    );
+  });
+
+  it('keeps V1 billing create modal flow available', () => {
+    const source = readFileSync('src/pages.tsx', 'utf8');
+    expect(source).toContain('<BillingCreateModal s={s} onClose={close} />');
+  });
+
+  it('wires recurring create success to recurring dashboard refresh', () => {
+    const source = readFileSync('src/pages.tsx', 'utf8');
+    expect(source).toContain('onCreated={() => setRevision((value) => value + 1)}');
   });
 });

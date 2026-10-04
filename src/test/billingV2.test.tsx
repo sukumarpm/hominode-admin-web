@@ -1,19 +1,24 @@
-import { render, screen, fireEvent } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { readFileSync } from 'node:fs';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
+import * as actionsModule from '../actions';
 import {
   createRecurringBillingScheduleV2,
-  normalizeReviseRecurringBillingScheduleV2Request,
   normalizeRecurringBillingScheduleRequest,
-  pauseRecurringBillingScheduleV2,
+  normalizeReviseRecurringBillingScheduleV2Request,
   parseRecurringAmountInrToMinorUnits,
-  reviseRecurringBillingScheduleV2,
+  pauseRecurringBillingScheduleV2,
   resumeRecurringBillingScheduleV2,
+  reviseRecurringBillingScheduleV2,
   stopRecurringBillingScheduleV2,
 } from '../actions';
-import * as actionsModule from '../actions';
+import {
+  CreateRecurringScheduleModal,
+  recurringScheduleAttemptStorageKey,
+} from '../components/CreateRecurringScheduleModal';
+import { recurringScheduleRevisionAttemptStorageKey } from '../components/RecurringSchedules';
 import {
   useAdminV2PaymentProofs,
   useAdminV2RecurringSchedules,
@@ -24,8 +29,8 @@ import {
 import {
   classifyV2Bill,
   formatInrMinorUnits,
-  hasValidV2RecurringSchedule,
   hasValidV2BillFinancials,
+  hasValidV2RecurringSchedule,
   isV2Bill,
   money,
   nextRecurringBillingPeriod,
@@ -34,11 +39,6 @@ import {
   type Row,
 } from '../models';
 import { ModulePage, V2BillFinancialSummary } from '../pages';
-import {
-  CreateRecurringScheduleModal,
-  recurringScheduleAttemptStorageKey,
-} from '../components/CreateRecurringScheduleModal';
-import { recurringScheduleRevisionAttemptStorageKey } from '../components/RecurringSchedules';
 import { AuthContext } from '../session';
 import { makeSession } from './fixtures';
 
@@ -379,10 +379,47 @@ describe('Admin Web Billing V2 bill foundation', () => {
     expect(v2Row.cells[1].textContent).toBe('₹1,234.56');
 
     fireEvent.click(screen.getByRole('button', { name: 'View Direct UPI proof' }));
-    expect(screen.getAllByText('UTR-V2-1')).toHaveLength(2);
+    const dialog = screen.getByRole('dialog');
+    const dialogContent = within(dialog);
+    expect(dialog).toHaveClass('payment-details-dialog');
+    expect(screen.getByRole('heading', { name: 'Payment details' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'UTR-V2-1' })).not.toBeInTheDocument();
+    expect(dialogContent.getByText('UTR-V2-1')).toBeInTheDocument();
+    expect(dialogContent.getByText('Payment / Proof ID')).toBeInTheDocument();
+    expect(dialogContent.getByText('shared-payment-id')).toBeInTheDocument();
     expect(screen.getAllByText('₹1,234.56')).toHaveLength(2);
     expect(screen.getByRole('button', { name: 'Verify payment' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Reject proof' })).toBeDisabled();
+  });
+
+  it('opens legacy payment details in the payment-specific dialog', () => {
+    renderPayments(
+      [
+        row(
+          {
+            title: 'Legacy proof',
+            communityId: 'community-1',
+            amount: 70,
+            method: 'external',
+            status: 'completed',
+            transactionId: 'LEGACY-REFERENCE-938401',
+          },
+          'legacy-proof-id',
+        ),
+      ],
+      [],
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'View Legacy proof' }));
+    const dialog = screen.getByRole('dialog');
+    const dialogContent = within(dialog);
+    expect(dialog).toHaveClass('payment-details-dialog');
+    expect(screen.getByRole('heading', { name: 'Payment details' })).toBeInTheDocument();
+    expect(dialogContent.getByText('Payment / Proof ID')).toBeInTheDocument();
+    expect(dialogContent.getByText('legacy-proof-id')).toBeInTheDocument();
+    expect(dialogContent.getByText('LEGACY-REFERENCE-938401')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Verify payment' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Reject proof' })).not.toBeInTheDocument();
   });
 
   it('shows unavailable for malformed V2 list/detail data without V1 amount fallback', () => {
@@ -681,7 +718,8 @@ describe('Admin Web recurring schedule dashboard', () => {
       'non-integer charge value',
     ],
     [{ id: 'different-schedule' }, 'document identity mismatch'],
-  ])('fails closed for %s', (overrides, _label) => {
+  ])('fails closed for %s (%s)', (overrides, label) => {
+    expect(label).toBeTruthy();
     expect(
       hasValidV2RecurringSchedule(
         validRecurringSchedule(overrides),

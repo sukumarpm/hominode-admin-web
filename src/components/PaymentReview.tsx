@@ -37,6 +37,30 @@ export function paymentAttributionLabel(value: unknown): string {
   return '';
 }
 
+function ReviewCard({
+  title,
+  values,
+  className = '',
+}: {
+  title: string;
+  values: [string, string][];
+  className?: string;
+}) {
+  return (
+    <section className={`payment-review-card ${className}`}>
+      <h3>{title}</h3>
+      <dl className="detail-fields payment-review-fields">
+        {values.map(([label, value]) => (
+          <div key={label}>
+            <dt>{label}</dt>
+            <dd>{value}</dd>
+          </div>
+        ))}
+      </dl>
+    </section>
+  );
+}
+
 function providerLabel(value: unknown, isAdminAttestation: boolean): string {
   if (str(value).toLowerCase() === 'direct_upi') return 'Direct UPI';
   if (!str(value) && isAdminAttestation) return '';
@@ -54,28 +78,33 @@ export function PaymentReviewDetails({
     if (!hasValidV2PaymentProof(data, paymentId)) {
       return <p role="status">V2 payment proof unavailable</p>;
     }
-    const values: [string, string][] = [
-      ['Submitted amount', formatInrMinorUnits(data.submittedAmountMinor)],
+    const paymentValues: [string, string][] = [
       ['Payment method', 'UPI'],
       ['Provider', 'Direct UPI'],
       ['Verification', 'Manual'],
       ['Evidence', 'Receipt'],
+      ['Submitted', dateLabel(data.submittedAt) === '—' ? 'Not specified' : dateLabel(data.submittedAt)],
+    ];
+    const identifierValues: [string, string][] = [
+      ...(paymentId ? ([['Payment / Proof ID', paymentId]] as [string, string][]) : []),
       ['Payment reference', str(data.paymentReference) || 'Not provided'],
       ['Bill reference', str(data.billId)],
       ['Resident reference', str(data.residentId)],
-      ['Submitted', dateLabel(data.submittedAt) === '—' ? 'Not specified' : dateLabel(data.submittedAt)],
-      ['Status', formattedValue(data.status)],
     ];
     return (
       <>
-        <dl className="detail-fields payment-review-fields">
-          {values.map(([label, value]) => (
-            <div key={label}>
-              <dt>{label}</dt>
-              <dd>{value}</dd>
-            </div>
-          ))}
-        </dl>
+        <div className="payment-review-groups">
+          <ReviewCard
+            title="Summary"
+            className="payment-review-summary"
+            values={[
+              ['Submitted amount', formatInrMinorUnits(data.submittedAmountMinor)],
+              ['Status', formattedValue(data.status)],
+            ]}
+          />
+          <ReviewCard title="Payment information" values={paymentValues} />
+          <ReviewCard title="Identifiers" values={identifierValues} />
+        </div>
         {data.status === 'completed' && (
           <p className="payment-proof-completion-note">This payment proof is completed.</p>
         )}
@@ -93,8 +122,7 @@ export function PaymentReviewDetails({
   const submitted = dateLabel(
     data.recordedAt ?? data.paidAt ?? data.paymentDate ?? data.createdAt ?? data.submittedAt,
   );
-  const values: [string, string][] = [
-    ['Amount', paymentAmount],
+  const paymentValues: [string, string][] = [
     ['Payment method', paymentMethodLabel(method)],
     ...(provider ? ([['Provider', provider]] as [string, string][]) : []),
     ['Verification', isAdminAttestation ? 'Not applicable' : formattedValue(data.verificationMode)],
@@ -105,6 +133,16 @@ export function PaymentReviewDetails({
         : formattedValue(data.evidenceType),
     ],
     [
+      isAdminAttestation ? 'Recorded' : 'Submitted',
+      submitted === '—' ? 'Not specified' : submitted,
+    ],
+    ...(str(data.status).toLowerCase() === 'completed' && paymentAttributionLabel(method)
+      ? ([['Settlement attribution', paymentAttributionLabel(method)]] as [string, string][])
+      : []),
+  ];
+  const identifierValues: [string, string][] = [
+    ...(paymentId ? ([['Payment / Proof ID', paymentId]] as [string, string][]) : []),
+    [
       'Transaction / Reference No.',
       str(data.transactionId) || str(data.paymentReference) || 'Not provided',
     ],
@@ -114,25 +152,21 @@ export function PaymentReviewDetails({
       'Resident reference',
       first(data, ['residentName', 'userName', 'residentId', 'userId']) || 'Not specified',
     ],
-    [
-      isAdminAttestation ? 'Recorded' : 'Submitted',
-      submitted === '—' ? 'Not specified' : submitted,
-    ],
-    ['Status', formattedValue(data.status)],
-    ...(str(data.status).toLowerCase() === 'completed' && paymentAttributionLabel(method)
-      ? ([['Settlement attribution', paymentAttributionLabel(method)]] as [string, string][])
-      : []),
   ];
 
   return (
-    <dl className="detail-fields payment-review-fields">
-      {values.map(([label, value]) => (
-        <div key={label}>
-          <dt>{label}</dt>
-          <dd>{value}</dd>
-        </div>
-      ))}
-    </dl>
+    <div className="payment-review-groups">
+      <ReviewCard
+        title="Summary"
+        className="payment-review-summary"
+        values={[
+          ['Amount', paymentAmount],
+          ['Status', formattedValue(data.status)],
+        ]}
+      />
+      <ReviewCard title="Payment information" values={paymentValues} />
+      <ReviewCard title="Identifiers" values={identifierValues} />
+    </div>
   );
 }
 
@@ -177,6 +211,7 @@ export function PaymentReviewSection({
       {receipt && <img className="receipt-image" src={receipt} alt="Payment receipt" />}
       {validV2 && canReview && isPending && (
         <div className="payment-review-controls">
+          <h3>Review controls</h3>
           <button
             type="button"
             className="primary"
@@ -200,6 +235,7 @@ export function PaymentReviewSection({
       )}
       {!isV2 && canReview && isPending && !isAdminAttestedMethod && (
         <div className="payment-review-controls">
+          <h3>Review controls</h3>
           <button type="button" className="primary" onClick={onVerify} disabled={busy}>
             Verify payment
           </button>

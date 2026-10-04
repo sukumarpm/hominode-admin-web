@@ -15,38 +15,40 @@ import {
   Users,
   WalletCards,
 } from 'lucide-react';
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
   createComplaint,
   createEvent,
-  uploadEventImages,
-  removeEventImage,
-  updateAnnouncement,
-  updateEvent,
   createVisitor,
   currentAuthority,
+  getBillingV2FinancialReport,
   publishNotice,
   receiptBlob,
+  removeEventImage,
   residentLifecycle,
   submitProof,
+  updateAnnouncement,
+  updateEvent,
   updateScoped,
+  uploadEventImages,
+  type BillingV2FinancialReport,
 } from './actions';
 import { AdminCreateButtons, ResidentReview } from './AdminTools';
 import { BillingCreateModal } from './BillingCreateModal';
-import { CreateRecurringScheduleModal } from './components/CreateRecurringScheduleModal';
 import { CommunityPaymentSettings } from './CommunityPaymentSettings';
+import { Card, Modal, Pill, State } from './components';
+import { CreateRecurringScheduleModal } from './components/CreateRecurringScheduleModal';
 import {
   paymentAttributionLabel,
   paymentMethodLabel,
   paymentReference,
   PaymentReviewSection,
 } from './components/PaymentReview';
-import { RecordPaymentPanel } from './components/RecordPaymentPanel';
-import { RecordOfflinePaymentV2Panel } from './components/RecordOfflinePaymentV2Panel';
-import { RecurringSchedulesPanel } from './components/RecurringSchedules';
-import { Card, Modal, Pill, State } from './components';
 import { PhoneNumberInput } from './components/PhoneNumberInput';
+import { RecordOfflinePaymentV2Panel } from './components/RecordOfflinePaymentV2Panel';
+import { RecordPaymentPanel } from './components/RecordPaymentPanel';
+import { RecurringSchedulesPanel } from './components/RecurringSchedules';
 import {
   safeUrl,
   titleOf,
@@ -62,13 +64,13 @@ import {
   amount,
   classifyV2Bill,
   dateLabel,
-  formatInrMinorUnits,
   first,
-  money,
+  formatInrMinorUnits,
   hasValidV2BillFinancials,
   hasValidV2PaymentProof,
   isV2Bill,
   isV2PaymentProof,
+  money,
   status,
   str,
   type Data,
@@ -519,10 +521,10 @@ function ScopedModule({
   const displayResource: Resource =
     module === 'payments' && s.role === 'admin'
       ? {
-          rows: [...resource.rows, ...v2ProofResource.rows],
-          loading: resource.loading || v2ProofResource.loading,
-          error: resource.error,
-        }
+        rows: [...resource.rows, ...v2ProofResource.rows],
+        loading: resource.loading || v2ProofResource.loading,
+        error: resource.error,
+      }
       : resource;
   const base = pageBase(s);
   const title = routeName === 'requests' ? 'Service Requests' : labels[module];
@@ -532,10 +534,10 @@ function ScopedModule({
   const categories =
     module === 'facilities'
       ? [
-          ...new Set(
-            resource.rows.map((r) => str(r.data.type) || str(r.data.category)).filter(Boolean),
-          ),
-        ]
+        ...new Set(
+          resource.rows.map((r) => str(r.data.type) || str(r.data.category)).filter(Boolean),
+        ),
+      ]
       : [];
   const rows = displayResource.rows
     .filter(
@@ -561,14 +563,14 @@ function ScopedModule({
     module === 'payments' && s.role === 'admin' && recordSource === 'v2'
       ? v2ProofResource.rows.find((r) => r.id === params.get('record'))
       : displayResource.rows.find(
-          (r) =>
-            r.id === params.get('record') &&
-            (recordSource === 'v1'
-              ? !isV2PaymentProof(r.data)
-              : recordSource === 'v2'
-                ? isV2PaymentProof(r.data)
-                : true),
-        );
+        (r) =>
+          r.id === params.get('record') &&
+          (recordSource === 'v1'
+            ? !isV2PaymentProof(r.data)
+            : recordSource === 'v2'
+              ? isV2PaymentProof(r.data)
+              : true),
+      );
   const create = params.get('create') === '1' && canCreate(s, module);
   const statuses =
     module === 'facilities'
@@ -667,7 +669,7 @@ function ScopedModule({
                 {resource.loading
                   ? '…'
                   : resource.rows.filter((r) => moduleStatus(module, r.data) === 'Maintenance')
-                      .length}
+                    .length}
               </strong>
               <span>Under Maintenance</span>
             </div>
@@ -697,8 +699,8 @@ function ScopedModule({
                 : displayResource.error
                   ? '—'
                   : displayResource.rows.filter((r) =>
-                      ['pending', 'expected', 'open'].includes(status(r.data)),
-                    ).length}
+                    ['pending', 'expected', 'open'].includes(status(r.data)),
+                  ).length}
             </strong>{' '}
             Awaiting action
           </span>
@@ -972,8 +974,8 @@ function ScopedModule({
                           <CalendarDays size={14} />
                           {dateLabel(
                             row.data.eventDate ??
-                              row.data.date ??
-                              row.data.createdAt,
+                            row.data.date ??
+                            row.data.createdAt,
                           )}
                         </span>
 
@@ -1098,10 +1100,10 @@ function ScopedModule({
                         ) : ['billing', 'payments'].includes(module)
                           ? money(amount(row.data))
                           : first(
-                              row.data,
-                              ['flatLabel', 'description', 'purpose', 'role', 'category'],
-                              '—',
-                            )}
+                            row.data,
+                            ['flatLabel', 'description', 'purpose', 'role', 'category'],
+                            '—',
+                          )}
                       </td>
                       {module === 'payments' && (
                         <td>
@@ -1127,12 +1129,12 @@ function ScopedModule({
                       <td>
                         {module === 'payments'
                           ? dateLabel(
-                              row.data.recordedAt ??
-                                row.data.paidAt ??
-                                row.data.paymentDate ??
-                                row.data.createdAt ??
-                                row.data.submittedAt,
-                            )
+                            row.data.recordedAt ??
+                            row.data.paidAt ??
+                            row.data.paymentDate ??
+                            row.data.createdAt ??
+                            row.data.submittedAt,
+                          )
                           : dateLabel(row.data.updatedAt ?? row.data.createdAt)}
                       </td>
                       <td>
@@ -1143,9 +1145,9 @@ function ScopedModule({
                             setParams(
                               module === 'payments'
                                 ? {
-                                    record: row.id,
-                                    recordSource: isV2PaymentProof(row.data) ? 'v2' : 'v1',
-                                  }
+                                  record: row.id,
+                                  recordSource: isV2PaymentProof(row.data) ? 'v2' : 'v1',
+                                }
                                 : { record: row.id },
                             )
                           }
@@ -1575,23 +1577,23 @@ function ContentEditForm({
   >(() =>
     Array.isArray(d.images)
       ? d.images
-          .filter(
-            (image): image is {
-              url: string;
-              storagePath: string;
-              name: string;
-            } =>
-              !!image &&
-              typeof image === 'object' &&
-              !Array.isArray(image) &&
-              typeof (image as Record<string, unknown>).url === 'string' &&
-              typeof (image as Record<string, unknown>).storagePath === 'string',
-          )
-          .map((image) => ({
-            url: image.url,
-            storagePath: image.storagePath,
-            name: typeof image.name === 'string' ? image.name : '',
-          }))
+        .filter(
+          (image): image is {
+            url: string;
+            storagePath: string;
+            name: string;
+          } =>
+            !!image &&
+            typeof image === 'object' &&
+            !Array.isArray(image) &&
+            typeof (image as Record<string, unknown>).url === 'string' &&
+            typeof (image as Record<string, unknown>).storagePath === 'string',
+        )
+        .map((image) => ({
+          url: image.url,
+          storagePath: image.storagePath,
+          name: typeof image.name === 'string' ? image.name : '',
+        }))
       : [],
   );
 
@@ -1863,8 +1865,7 @@ function ContentEditForm({
 
                         if (merged.length > available) {
                           setError(
-                            `You can add only ${available} more photo${
-                              available === 1 ? '' : 's'
+                            `You can add only ${available} more photo${available === 1 ? '' : 's'
                             }. Maximum is 6 total.`,
                           );
 
@@ -2065,18 +2066,14 @@ function RecordDetails({
     );
   return (
     <Modal
-        title={
-          module === 'payments'
-            ? `Payment · ${paymentReference(d, row.id)}`
-            : titleOf(d)
-        }
-        onClose={onClose}
-      >
+      title={module === 'payments' ? 'Payment details' : titleOf(d)}
+      className={module === 'payments' ? 'payment-details-dialog' : undefined}
+      onClose={onClose}
+    >
       {module === 'events' ? (
         <EventDetailView data={d} title={titleOf(d)} />
       ) : module === 'payments' ? (
         <>
-          <Pill value={moduleStatus(module, d)} />
           <PaymentReviewSection
             data={d}
             paymentId={row.id}
@@ -2357,8 +2354,8 @@ function RecordDetails({
 
                   const confirmed = window.confirm(
                     `Release reservation for ${residentName}?\n\n` +
-                      `${str(d.flatLabel) || 'This unit'} will become vacant. ` +
-                      `The resident onboarding will remain available for assignment to another unit.`,
+                    `${str(d.flatLabel) || 'This unit'} will become vacant. ` +
+                    `The resident onboarding will remain available for assignment to another unit.`,
                   );
 
                   if (!confirmed) return;
@@ -2540,6 +2537,86 @@ function ReportData({ s }: { s: Session }) {
     ['Complaints', complaints],
     ['Bills', bills],
   ] as const;
+  const currentMonth = new Date();
+  const [billingPeriod, setBillingPeriod] = useState(
+    `${currentMonth.getFullYear()}-${String(currentMonth.getMonth() + 1).padStart(2, '0')}`,
+  );
+  const communityId = s.community?.id ?? '';
+  const requestKey = `${communityId}:${billingPeriod}`;
+  const requestId = useRef(0);
+  const [financialState, setFinancialState] = useState<{
+    key: string;
+    loading: boolean;
+    report: BillingV2FinancialReport | null;
+    error: boolean;
+  }>({ key: '', loading: true, report: null, error: false });
+
+  useEffect(() => {
+    const id = ++requestId.current;
+    setFinancialState({ key: requestKey, loading: true, report: null, error: false });
+    if (!communityId) {
+      setFinancialState({ key: requestKey, loading: false, report: null, error: true });
+      return;
+    }
+    void getBillingV2FinancialReport(s, billingPeriod).then(
+      (report) => {
+        if (requestId.current === id) {
+          setFinancialState({ key: requestKey, loading: false, report, error: false });
+        }
+      },
+      () => {
+        if (requestId.current === id) {
+          setFinancialState({ key: requestKey, loading: false, report: null, error: true });
+        }
+      },
+    );
+    return () => {
+      if (requestId.current === id) requestId.current += 1;
+    };
+  }, [s, communityId, billingPeriod, requestKey]);
+
+  const visibleFinancialState =
+    financialState.key === requestKey
+      ? financialState
+      : { key: requestKey, loading: true, report: null, error: false };
+  function exportFinancialReport(report: BillingV2FinancialReport) {
+    const rows: Array<[string, string | number]> = [
+      ['community id', report.communityId],
+      ['community name', s.community?.name ?? ''],
+      ['billing period', report.billingPeriod],
+      ['generated timestamp', new Date(report.generatedAtMs).toISOString()],
+      ['total billed minor', report.liabilitySummary.billedMinor],
+      ['paid allocations minor', report.liabilitySummary.paidAllocationMinor],
+      ['credit applied minor', report.liabilitySummary.creditAppliedMinor],
+      ['outstanding minor', report.liabilitySummary.outstandingMinor],
+      ['overdue outstanding minor', report.liabilitySummary.overdueOutstandingMinor],
+      ['pending count', report.liabilitySummary.statusCounts.pending],
+      ['partially paid count', report.liabilitySummary.statusCounts.partially_paid],
+      ['paid count', report.liabilitySummary.statusCounts.paid],
+      ['overdue count', report.liabilitySummary.statusCounts.overdue],
+      ['collections received minor', report.collectionActivity.totalReceivedMinor],
+      ['transaction count', report.collectionActivity.transactionCount],
+      ['upi count', report.collectionActivity.methods.upi.count],
+      ['upi amount minor', report.collectionActivity.methods.upi.totalMinor],
+      ['cash count', report.collectionActivity.methods.cash.count],
+      ['cash amount minor', report.collectionActivity.methods.cash.totalMinor],
+      ['bank transfer count', report.collectionActivity.methods.bank_transfer.count],
+      ['bank transfer amount minor', report.collectionActivity.methods.bank_transfer.totalMinor],
+      ['cheque count', report.collectionActivity.methods.cheque.count],
+      ['cheque amount minor', report.collectionActivity.methods.cheque.totalMinor],
+      ['credit accounts count', report.creditPosition.accountsCount],
+      ['residents with available credit', report.creditPosition.residentsWithCreditCount],
+      ['total available resident credit minor', report.creditPosition.totalAvailableCreditMinor],
+    ];
+    const escapeCell = (value: string | number) => `"${String(value).replaceAll('"', '""')}"`;
+    const csv = `Metric,Value\r\n${rows.map(([name, value]) => `${escapeCell(name)},${escapeCell(value)}`).join('\r\n')}`;
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `billing-v2-financial-report-${report.billingPeriod}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
   function exportReport() {
     const csv =
       'Metric,Count\r\n' + records.map(([name, r]) => name + ',' + r.rows.length).join('\r\n');
@@ -2552,35 +2629,246 @@ function ReportData({ s }: { s: Session }) {
   }
   return (
     <>
-      <header className="page-header">
-        <div>
-          <p className="eyebrow">Community intelligence</p>
-          <h1>Reports</h1>
-          <p>Current community totals from your operational records.</p>
+      <section className="financial-report" aria-labelledby="financial-report-title">
+        <header className="financial-report-header">
+          <div>
+            <p className="eyebrow">Community finance</p>
+            <h1 id="financial-report-title">Financial Reports</h1>
+            <p>Billing, collections and payment insights for your community.</p>
+          </div>
+          <div className="financial-report-actions">
+            <label className="financial-report-period">
+              <span>Current Billing period</span>
+              <input
+                aria-label="Billing period"
+                type="month"
+                value={billingPeriod}
+                onChange={(event) => setBillingPeriod(event.target.value)}
+              />
+            </label>
+            <button
+              className="outline-link financial-report-export"
+              disabled={
+                visibleFinancialState.loading ||
+                visibleFinancialState.error ||
+                !visibleFinancialState.report
+              }
+              onClick={() =>
+                visibleFinancialState.report && exportFinancialReport(visibleFinancialState.report)
+              }
+            >
+              <Download size={18} />
+              Export financial CSV
+            </button>
+          </div>
+        </header>
+        {visibleFinancialState.loading ? (
+          <div className="financial-report-state" role="status">
+            <span className="financial-report-spinner" aria-hidden="true" />
+            <span>Loading financial report…</span>
+          </div>
+        ) : visibleFinancialState.error || !visibleFinancialState.report ? (
+          <div className="financial-report-error" role="alert">
+            <h2>Financial report unavailable</h2>
+            <p>Financial report is unavailable. Please try again later.</p>
+          </div>
+        ) : (
+          <FinancialReportDashboard report={visibleFinancialState.report} />
+        )}
+      </section>
+      <section className="community-overview" aria-labelledby="community-overview-title">
+        <header className="community-overview-header">
+          <div>
+            <h2 id="community-overview-title">Community overview</h2>
+            <p>Current counts from operational records.</p>
+          </div>
+          <button
+            className="primary"
+            disabled={records.some(([, r]) => r.loading || !!r.error)}
+            onClick={exportReport}
+          >
+            <Download size={18} />
+            Export summary
+          </button>
+        </header>
+        <div className="community-overview-grid">
+          {records.map(([title, r]) => (
+            <Card title={title} key={title} className="community-overview-card">
+              {r.loading ? (
+                <p role="status">Loading…</p>
+              ) : r.error ? (
+                <p role="alert">{r.error}</p>
+              ) : (
+                <strong className="report-number">{r.rows.length}</strong>
+              )}
+            </Card>
+          ))}
         </div>
-        <button
-          className="primary"
-          disabled={records.some(([, r]) => r.loading || !!r.error)}
-          onClick={exportReport}
-        >
-          <Download size={18} />
-          Export summary
-        </button>
-      </header>
-      <div className="report-grid">
-        {records.map(([title, r]) => (
-          <Card title={title} key={title}>
-            {r.loading ? (
-              <p role="status">Loading…</p>
-            ) : r.error ? (
-              <p role="alert">{r.error}</p>
-            ) : (
-              <strong className="report-number">{r.rows.length}</strong>
-            )}
-          </Card>
-        ))}
-      </div>
+      </section>
     </>
+  );
+}
+
+function FinancialReportDashboard({ report }: { report: BillingV2FinancialReport }) {
+  const statuses = [
+    ['Paid', report.liabilitySummary.statusCounts.paid],
+    ['Pending', report.liabilitySummary.statusCounts.pending],
+    ['Partially paid', report.liabilitySummary.statusCounts.partially_paid],
+    ['Overdue', report.liabilitySummary.statusCounts.overdue],
+  ] as const;
+  const methods = [
+    ['UPI', report.collectionActivity.methods.upi],
+    ['Cash', report.collectionActivity.methods.cash],
+    ['Bank transfer', report.collectionActivity.methods.bank_transfer],
+    ['Cheque', report.collectionActivity.methods.cheque],
+  ] as const;
+  const largestStatusCount = Math.max(0, ...statuses.map(([, count]) => count));
+  const totalReceivedMinor = report.collectionActivity.totalReceivedMinor;
+
+  return (
+    <div className="financial-report-content">
+      <div className="financial-report-kpis" aria-label="Financial highlights">
+        <article className="financial-report-kpi">
+          <span>Total billed</span>
+          <strong>{formatInrMinorUnits(report.liabilitySummary.billedMinor)}</strong>
+        </article>
+        <article className="financial-report-kpi">
+          <span>Collections received</span>
+          <strong>{formatInrMinorUnits(totalReceivedMinor)}</strong>
+        </article>
+        <article className="financial-report-kpi">
+          <span>Outstanding</span>
+          <strong>{formatInrMinorUnits(report.liabilitySummary.outstandingMinor)}</strong>
+        </article>
+        <article className="financial-report-kpi">
+          <span>Available credit</span>
+          <strong>{formatInrMinorUnits(report.creditPosition.totalAvailableCreditMinor)}</strong>
+        </article>
+      </div>
+
+      <div className="financial-report-primary-grid">
+        <section className="financial-report-card" aria-labelledby="financial-bill-status-title">
+          <header className="financial-report-card-header">
+            <div>
+              <p className="eyebrow">Liability</p>
+              <h2 id="financial-bill-status-title">Bill status</h2>
+            </div>
+            <span className="financial-report-card-note">
+              {report.liabilitySummary.billsCount} bills
+            </span>
+          </header>
+          <div className="financial-report-status-list">
+            {statuses.map(([label, count]) => (
+              <div className="financial-report-status-row" key={label}>
+                <div className="financial-report-row-label">
+                  <strong>{label}</strong>
+                  <span>{count}</span>
+                </div>
+                <div className="financial-report-track" aria-hidden="true">
+                  <span
+                    className={`financial-report-status-fill status-${label.toLowerCase().replace(' ', '-')}`}
+                    style={{
+                      width:
+                        largestStatusCount === 0
+                          ? '0%'
+                          : `${(count / largestStatusCount) * 100}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="financial-report-card" aria-labelledby="financial-payment-methods-title">
+          <header className="financial-report-card-header">
+            <div>
+              <p className="eyebrow">Collections</p>
+              <h2 id="financial-payment-methods-title">Payment methods</h2>
+            </div>
+            <span className="financial-report-card-note">
+              {formatInrMinorUnits(totalReceivedMinor)} received
+            </span>
+          </header>
+          <div className="financial-report-method-list">
+            {methods.map(([label, method]) => (
+              <div className="financial-report-method-row" key={label}>
+                <div className="financial-report-row-label">
+                  <strong>{label}</strong>
+                  <span>
+                    {method.count} {method.count === 1 ? 'transaction' : 'transactions'}
+                  </span>
+                </div>
+                <strong className="financial-report-method-total">
+                  {formatInrMinorUnits(method.totalMinor)}
+                </strong>
+                <div className="financial-report-track" aria-hidden="true">
+                  <span
+                    className="financial-report-method-fill"
+                    style={{
+                      width:
+                        totalReceivedMinor === 0
+                          ? '0%'
+                          : `${Math.min((method.totalMinor / totalReceivedMinor) * 100, 100)}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      </div>
+
+      <section className="financial-report-card financial-summary-card" aria-labelledby="financial-summary-title">
+        <header className="financial-report-card-header">
+          <div>
+            <p className="eyebrow">At a glance</p>
+            <h2 id="financial-summary-title">Financial Summary</h2>
+          </div>
+        </header>
+        <div className="financial-summary-groups">
+          <section>
+            <h3>Liability / settlement</h3>
+            <dl>
+              <div>
+                <dt>Paid allocations</dt>
+                <dd>{formatInrMinorUnits(report.liabilitySummary.paidAllocationMinor)}</dd>
+              </div>
+              <div>
+                <dt>Credit applied</dt>
+                <dd>{formatInrMinorUnits(report.liabilitySummary.creditAppliedMinor)}</dd>
+              </div>
+              <div>
+                <dt>Overdue outstanding</dt>
+                <dd>{formatInrMinorUnits(report.liabilitySummary.overdueOutstandingMinor)}</dd>
+              </div>
+            </dl>
+          </section>
+          <section>
+            <h3>Activity</h3>
+            <dl>
+              <div>
+                <dt>Transaction count</dt>
+                <dd>{report.collectionActivity.transactionCount}</dd>
+              </div>
+            </dl>
+          </section>
+          <section>
+            <h3>Credit position</h3>
+            <dl>
+              <div>
+                <dt>Accounts count</dt>
+                <dd>{report.creditPosition.accountsCount}</dd>
+              </div>
+              <div>
+                <dt>Residents with available credit</dt>
+                <dd>{report.creditPosition.residentsWithCreditCount}</dd>
+              </div>
+            </dl>
+          </section>
+        </div>
+      </section>
+    </div>
   );
 }
 export function UnsupportedPage({ title, message }: { title: string; message: string }) {

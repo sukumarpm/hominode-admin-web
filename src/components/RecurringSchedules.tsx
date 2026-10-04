@@ -4,14 +4,15 @@ import {
   normalizeReviseRecurringBillingScheduleV2Request,
   parseRecurringAmountInrToMinorUnits,
   pauseRecurringBillingScheduleV2,
-  reviseRecurringBillingScheduleV2,
   resumeRecurringBillingScheduleV2,
+  reviseRecurringBillingScheduleV2,
   stopRecurringBillingScheduleV2,
   type RecurringChargeCodeV2,
   type RecurringLifecycleStatusV2,
   type ReviseRecurringBillingScheduleV2Request,
 } from '../actions';
 import { Card, Modal, Pill } from '../components';
+import { useRows, type Resource } from '../data';
 import {
   formatInrMinorUnits,
   hasRevisionCompatibleV2RecurringSchedule,
@@ -23,7 +24,6 @@ import {
   type Row,
   type Session,
 } from '../models';
-import { useRows, type Resource } from '../data';
 
 const scopeLabels = {
   community: 'Entire Community',
@@ -463,7 +463,7 @@ export function RecurringSchedulesPanel({
         line.code === 'custom'
           ? line.customLabel.replace(/\s+/g, ' ').trim()
           : standardChargeLabelsByCode.get(line.code as Exclude<RecurringChargeCodeV2, 'custom'>) ||
-            '';
+          '';
       const amountMinor = parseRecurringAmountInrToMinorUnits(line.amountInr);
       if (!line.lineId) throw Error(`Charge line ${index + 1} ID is required.`);
       if (!label) throw Error(`Charge line ${index + 1} label is required.`);
@@ -663,194 +663,194 @@ export function RecurringSchedulesPanel({
       {revisionDraft &&
         !unreadableSavedRevisionAttempt &&
         (!savedRevisionAttempt || (revisionBusy && revisionMode === 'new')) && (
-        <Modal
-          title="Revise Recurring Schedule"
-          onClose={() => {
-            if (revisionBusy) return;
-            clearRevisionUi();
-          }}
-        >
-          <fieldset disabled={revisionBusy}>
-            <p>
-              <strong>Schedule</strong>: {revisionDraft.scheduleName}
-            </p>
-            <p>
-              <strong>Schedule ID</strong>: {revisionDraft.scheduleId}
-            </p>
-            <p>
-              <strong>Current revision</strong>: {revisionDraft.currentRevisionNo}
-            </p>
-            <p>
-              <strong>Current revision ID</strong>: {revisionDraft.expectedRevisionId}
-            </p>
-            <p>Submitting creates a new immutable revision. Existing revisions are never edited in place.</p>
-            <p>
-              The backend may apply revised terms from a later safe billing period if earlier periods are
-              already generated or reserved.
-            </p>
+          <Modal
+            title="Revise Recurring Schedule"
+            onClose={() => {
+              if (revisionBusy) return;
+              clearRevisionUi();
+            }}
+          >
+            <fieldset disabled={revisionBusy}>
+              <p>
+                <strong>Schedule</strong>: {revisionDraft.scheduleName}
+              </p>
+              <p>
+                <strong>Schedule ID</strong>: {revisionDraft.scheduleId}
+              </p>
+              <p>
+                <strong>Current revision</strong>: {revisionDraft.currentRevisionNo}
+              </p>
+              <p>
+                <strong>Current revision ID</strong>: {revisionDraft.expectedRevisionId}
+              </p>
+              <p>Submitting creates a new immutable revision. Existing revisions are never edited in place.</p>
+              <p>
+                The backend may apply revised terms from a later safe billing period if earlier periods are
+                already generated or reserved.
+              </p>
 
-            <label>
-              Scope
-              <select
-                value={revisionDraft.scope}
-                onChange={(event) =>
-                  setRevisionDraft((current) =>
-                    current
-                      ? {
+              <label>
+                Scope
+                <select
+                  value={revisionDraft.scope}
+                  onChange={(event) =>
+                    setRevisionDraft((current) =>
+                      current
+                        ? {
                           ...current,
                           scope: event.target.value as RevisionDraft['scope'],
                           buildingId: '',
                           flatId: '',
                           flatIds: [],
                         }
-                      : current,
-                  )
-                }
-              >
-                <option value="community">Entire Community</option>
-                <option value="building">Building</option>
-                <option value="unit">Individual Unit</option>
-                <option value="units">Selected Units</option>
-              </select>
-            </label>
-
-            {(revisionDraft.scope === 'building' || revisionDraft.scope === 'unit') && (
-              <label>
-                Building
-                <select
-                  value={revisionDraft.buildingId}
-                  onChange={(event) =>
-                    setRevisionDraft((current) =>
-                      current
-                        ? { ...current, buildingId: event.target.value, flatId: '' }
                         : current,
                     )
                   }
                 >
-                  <option value="">Select building</option>
-                  {buildingOptions.map((building) => (
-                    <option key={building.id} value={building.id}>
-                      {building.label}
-                    </option>
-                  ))}
+                  <option value="community">Entire Community</option>
+                  <option value="building">Building</option>
+                  <option value="unit">Individual Unit</option>
+                  <option value="units">Selected Units</option>
                 </select>
               </label>
-            )}
 
-            {revisionDraft.scope === 'unit' && (
-              <label>
-                Unit
-                <select
-                  value={revisionDraft.flatId}
-                  onChange={(event) =>
-                    setRevisionDraft((current) =>
-                      current ? { ...current, flatId: event.target.value } : current,
-                    )
-                  }
-                >
-                  <option value="">Select unit</option>
-                  {unitOptions
-                    .filter((unit) => unit.buildingId === revisionDraft.buildingId)
-                    .map((unit) => (
-                      <option key={unit.id} value={unit.id}>
-                        {unit.label}
+              {(revisionDraft.scope === 'building' || revisionDraft.scope === 'unit') && (
+                <label>
+                  Building
+                  <select
+                    value={revisionDraft.buildingId}
+                    onChange={(event) =>
+                      setRevisionDraft((current) =>
+                        current
+                          ? { ...current, buildingId: event.target.value, flatId: '' }
+                          : current,
+                      )
+                    }
+                  >
+                    <option value="">Select building</option>
+                    {buildingOptions.map((building) => (
+                      <option key={building.id} value={building.id}>
+                        {building.label}
                       </option>
                     ))}
-                </select>
+                  </select>
+                </label>
+              )}
+
+              {revisionDraft.scope === 'unit' && (
+                <label>
+                  Unit
+                  <select
+                    value={revisionDraft.flatId}
+                    onChange={(event) =>
+                      setRevisionDraft((current) =>
+                        current ? { ...current, flatId: event.target.value } : current,
+                      )
+                    }
+                  >
+                    <option value="">Select unit</option>
+                    {unitOptions
+                      .filter((unit) => unit.buildingId === revisionDraft.buildingId)
+                      .map((unit) => (
+                        <option key={unit.id} value={unit.id}>
+                          {unit.label}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+              )}
+
+              {revisionDraft.scope === 'units' && (
+                <fieldset>
+                  <legend>Selected Units</legend>
+                  <div>
+                    {unitOptions.map((unit) => (
+                      <label key={unit.id}>
+                        <input
+                          type="checkbox"
+                          checked={revisionDraft.flatIds.includes(unit.id)}
+                          onChange={(event) =>
+                            setRevisionDraft((current) => {
+                              if (!current) return current;
+                              const next = event.target.checked
+                                ? [...current.flatIds, unit.id]
+                                : current.flatIds.filter((id) => id !== unit.id);
+                              return { ...current, flatIds: [...new Set(next)] };
+                            })
+                          }
+                        />
+                        <span>{unit.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+              )}
+
+              <label>
+                Generation day
+                <input
+                  type="number"
+                  min={1}
+                  max={28}
+                  value={revisionDraft.generationDay}
+                  onChange={(event) =>
+                    setRevisionDraft((current) =>
+                      current ? { ...current, generationDay: event.target.value } : current,
+                    )
+                  }
+                />
               </label>
-            )}
+              <label>
+                Due day
+                <input
+                  type="number"
+                  min={1}
+                  max={28}
+                  value={revisionDraft.dueDay}
+                  onChange={(event) =>
+                    setRevisionDraft((current) =>
+                      current ? { ...current, dueDay: event.target.value } : current,
+                    )
+                  }
+                />
+              </label>
+              <label>
+                Start billing period
+                <input
+                  type="month"
+                  value={revisionDraft.startBillingPeriod}
+                  onChange={(event) =>
+                    setRevisionDraft((current) =>
+                      current ? { ...current, startBillingPeriod: event.target.value } : current,
+                    )
+                  }
+                />
+              </label>
+              <label>
+                End billing period (optional)
+                <input
+                  type="month"
+                  value={revisionDraft.endBillingPeriod}
+                  onChange={(event) =>
+                    setRevisionDraft((current) =>
+                      current ? { ...current, endBillingPeriod: event.target.value } : current,
+                    )
+                  }
+                />
+              </label>
 
-            {revisionDraft.scope === 'units' && (
               <fieldset>
-                <legend>Selected Units</legend>
-                <div>
-                  {unitOptions.map((unit) => (
-                    <label key={unit.id}>
-                      <input
-                        type="checkbox"
-                        checked={revisionDraft.flatIds.includes(unit.id)}
+                <legend>Charge lines</legend>
+                {revisionDraft.chargeLines.map((line, index) => (
+                  <div key={line.lineId}>
+                    <label>
+                      Charge type
+                      <select
+                        value={line.code}
                         onChange={(event) =>
-                          setRevisionDraft((current) => {
-                            if (!current) return current;
-                            const next = event.target.checked
-                              ? [...current.flatIds, unit.id]
-                              : current.flatIds.filter((id) => id !== unit.id);
-                            return { ...current, flatIds: [...new Set(next)] };
-                          })
-                        }
-                      />
-                      <span>{unit.label}</span>
-                    </label>
-                  ))}
-                </div>
-              </fieldset>
-            )}
-
-            <label>
-              Generation day
-              <input
-                type="number"
-                min={1}
-                max={28}
-                value={revisionDraft.generationDay}
-                onChange={(event) =>
-                  setRevisionDraft((current) =>
-                    current ? { ...current, generationDay: event.target.value } : current,
-                  )
-                }
-              />
-            </label>
-            <label>
-              Due day
-              <input
-                type="number"
-                min={1}
-                max={28}
-                value={revisionDraft.dueDay}
-                onChange={(event) =>
-                  setRevisionDraft((current) =>
-                    current ? { ...current, dueDay: event.target.value } : current,
-                  )
-                }
-              />
-            </label>
-            <label>
-              Start billing period
-              <input
-                type="month"
-                value={revisionDraft.startBillingPeriod}
-                onChange={(event) =>
-                  setRevisionDraft((current) =>
-                    current ? { ...current, startBillingPeriod: event.target.value } : current,
-                  )
-                }
-              />
-            </label>
-            <label>
-              End billing period (optional)
-              <input
-                type="month"
-                value={revisionDraft.endBillingPeriod}
-                onChange={(event) =>
-                  setRevisionDraft((current) =>
-                    current ? { ...current, endBillingPeriod: event.target.value } : current,
-                  )
-                }
-              />
-            </label>
-
-            <fieldset>
-              <legend>Charge lines</legend>
-              {revisionDraft.chargeLines.map((line, index) => (
-                <div key={line.lineId}>
-                  <label>
-                    Charge type
-                    <select
-                      value={line.code}
-                      onChange={(event) =>
-                        setRevisionDraft((current) =>
-                          current
-                            ? {
+                          setRevisionDraft((current) =>
+                            current
+                              ? {
                                 ...current,
                                 chargeLines: current.chargeLines.map((item) =>
                                   item.lineId === line.lineId
@@ -858,28 +858,28 @@ export function RecurringSchedulesPanel({
                                     : item,
                                 ),
                               }
-                            : current,
-                        )
-                      }
-                    >
-                      {standardChargeOptions.map((option) => (
-                        <option key={option.code} value={option.code}>
-                          {option.label}
-                        </option>
-                      ))}
-                      <option value="custom">Custom</option>
-                    </select>
-                  </label>
-                  {line.code === 'custom' && (
-                    <label>
-                      Custom label
-                      <input
-                        maxLength={80}
-                        value={line.customLabel}
-                        onChange={(event) =>
-                          setRevisionDraft((current) =>
-                            current
-                              ? {
+                              : current,
+                          )
+                        }
+                      >
+                        {standardChargeOptions.map((option) => (
+                          <option key={option.code} value={option.code}>
+                            {option.label}
+                          </option>
+                        ))}
+                        <option value="custom">Custom</option>
+                      </select>
+                    </label>
+                    {line.code === 'custom' && (
+                      <label>
+                        Custom label
+                        <input
+                          maxLength={80}
+                          value={line.customLabel}
+                          onChange={(event) =>
+                            setRevisionDraft((current) =>
+                              current
+                                ? {
                                   ...current,
                                   chargeLines: current.chargeLines.map((item) =>
                                     item.lineId === line.lineId
@@ -887,21 +887,21 @@ export function RecurringSchedulesPanel({
                                       : item,
                                   ),
                                 }
-                              : current,
-                          )
-                        }
-                      />
-                    </label>
-                  )}
-                  <label>
-                    Amount (INR)
-                    <input
-                      inputMode="decimal"
-                      value={line.amountInr}
-                      onChange={(event) =>
-                        setRevisionDraft((current) =>
-                          current
-                            ? {
+                                : current,
+                            )
+                          }
+                        />
+                      </label>
+                    )}
+                    <label>
+                      Amount (INR)
+                      <input
+                        inputMode="decimal"
+                        value={line.amountInr}
+                        onChange={(event) =>
+                          setRevisionDraft((current) =>
+                            current
+                              ? {
                                 ...current,
                                 chargeLines: current.chargeLines.map((item) =>
                                   item.lineId === line.lineId
@@ -909,81 +909,81 @@ export function RecurringSchedulesPanel({
                                     : item,
                                 ),
                               }
-                            : current,
-                        )
-                      }
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    disabled={revisionDraft.chargeLines.length === 1}
-                    onClick={() =>
-                      setRevisionDraft((current) =>
-                        current
-                          ? {
+                              : current,
+                          )
+                        }
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      disabled={revisionDraft.chargeLines.length === 1}
+                      onClick={() =>
+                        setRevisionDraft((current) =>
+                          current
+                            ? {
                               ...current,
                               chargeLines:
                                 current.chargeLines.length === 1
                                   ? current.chargeLines
                                   : current.chargeLines.filter((item) => item.lineId !== line.lineId),
                             }
-                          : current,
-                      )
+                            : current,
+                        )
+                      }
+                    >
+                      Remove line {index + 1}
+                    </button>
+                  </div>
+                ))}
+
+                {revisionDraft.chargeLines.length < maxChargeLines && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setRevisionDraft((current) => {
+                        if (!current) return current;
+                        const existing = new Set(current.chargeLines.map((line) => line.lineId));
+                        const lineId = nextLineId(existing);
+                        return {
+                          ...current,
+                          chargeLines: [
+                            ...current.chargeLines,
+                            { lineId, code: 'maintenance', customLabel: '', amountInr: '' },
+                          ],
+                        };
+                      })
                     }
                   >
-                    Remove line {index + 1}
+                    Add line
                   </button>
-                </div>
-              ))}
+                )}
+              </fieldset>
 
-              {revisionDraft.chargeLines.length < maxChargeLines && (
-                <button
-                  type="button"
-                  onClick={() =>
-                    setRevisionDraft((current) => {
-                      if (!current) return current;
-                      const existing = new Set(current.chargeLines.map((line) => line.lineId));
-                      const lineId = nextLineId(existing);
-                      return {
-                        ...current,
-                        chargeLines: [
-                          ...current.chargeLines,
-                          { lineId, code: 'maintenance', customLabel: '', amountInr: '' },
-                        ],
-                      };
-                    })
+              <label>
+                Revision reason (optional)
+                <textarea
+                  maxLength={300}
+                  rows={3}
+                  value={revisionDraft.reason}
+                  onChange={(event) =>
+                    setRevisionDraft((current) =>
+                      current ? { ...current, reason: event.target.value } : current,
+                    )
                   }
-                >
-                  Add line
+                />
+              </label>
+
+              <div className="button-row">
+                <button type="button" disabled={revisionBusy} onClick={() => clearRevisionUi()}>
+                  Cancel
                 </button>
-              )}
+                <button type="button" className="primary" disabled={revisionBusy} onClick={() => void submitNewRevision()}>
+                  {revisionBusy ? 'Submitting revision…' : 'Revise'}
+                </button>
+              </div>
             </fieldset>
-
-            <label>
-              Revision reason (optional)
-              <textarea
-                maxLength={300}
-                rows={3}
-                value={revisionDraft.reason}
-                onChange={(event) =>
-                  setRevisionDraft((current) =>
-                    current ? { ...current, reason: event.target.value } : current,
-                  )
-                }
-              />
-            </label>
-
-            <div className="button-row">
-              <button type="button" disabled={revisionBusy} onClick={() => clearRevisionUi()}>
-                Cancel
-              </button>
-              <button type="button" className="primary" disabled={revisionBusy} onClick={() => void submitNewRevision()}>
-                {revisionBusy ? 'Submitting revision…' : 'Revise'}
-              </button>
-            </div>
-          </fieldset>
-        </Modal>
-      )}
+          </Modal>
+        )}
 
       {revisionDraft && (savedRevisionAttempt || unreadableSavedRevisionAttempt) && !(revisionBusy && revisionMode === 'new') && (
         <Modal

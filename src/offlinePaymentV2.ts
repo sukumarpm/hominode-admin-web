@@ -37,6 +37,20 @@ function safeIdentifier(value: unknown): string | null {
   return trimmed && !trimmed.includes('/') ? trimmed : null;
 }
 
+function safeFirestoreDocumentId(value: unknown): string | null {
+  const id = safeIdentifier(value);
+  if (
+    !id ||
+    id !== value ||
+    id === '.' ||
+    id === '..' ||
+    /^__.*__$/.test(id) ||
+    new TextEncoder().encode(id).length > 1500
+  )
+    return null;
+  return id;
+}
+
 function safeMinorUnits(value: unknown, allowZero = false): value is number {
   return (
     typeof value === 'number' &&
@@ -195,25 +209,28 @@ export function parseOfflinePaymentResultV2(value: unknown): OfflinePaymentResul
   const record = value as Record<string, unknown>;
   if (
     record.success !== true ||
-    typeof record.transactionId !== 'string' ||
-    !record.transactionId.trim() ||
+    !safeFirestoreDocumentId(record.transactionId) ||
     !Array.isArray(record.allocations) ||
     !safeMinorUnits(record.excessCreditMinor, true) ||
     typeof record.alreadyCompleted !== 'boolean'
   )
     return null;
 
-  const allocations = record.allocations.flatMap((item): OfflinePaymentAllocationV2[] => {
-    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+  const allocations: OfflinePaymentAllocationV2[] = [];
+  const billIds = new Set<string>();
+  for (const item of record.allocations) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
     const allocation = item as Record<string, unknown>;
-    const billId = safeIdentifier(allocation.billId);
-    if (!billId || !safeMinorUnits(allocation.amountMinor)) return [];
-    return [{ billId, amountMinor: allocation.amountMinor }];
-  });
+    const billId = safeFirestoreDocumentId(allocation.billId);
+    if (!billId || !safeMinorUnits(allocation.amountMinor) || billIds.has(billId))
+      return null;
+    billIds.add(billId);
+    allocations.push({ billId, amountMinor: allocation.amountMinor });
+  }
 
   return {
     success: true,
-    transactionId: record.transactionId.trim(),
+    transactionId: record.transactionId as string,
     allocations,
     excessCreditMinor: record.excessCreditMinor,
     alreadyCompleted: record.alreadyCompleted,

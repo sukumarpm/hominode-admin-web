@@ -296,6 +296,23 @@ describe('Admin Billing V2 offline payment action', () => {
     ]);
   });
 
+  it('clears an exact attempt after a fully credit result accounts for the whole payment', async () => {
+    const session = adminPaymentSession();
+    mockOfflinePaymentBill();
+    saveOfflinePaymentAttemptV2(attempt);
+    m.call.mockResolvedValue({
+      ...successfulResult,
+      allocations: [],
+      excessCreditMinor: attempt.amountMinor,
+    });
+
+    await expect(recordOfflinePaymentV2(session, attempt)).resolves.toMatchObject({
+      allocations: [],
+      excessCreditMinor: attempt.amountMinor,
+    });
+    expect(localStorage.length).toBe(0);
+  });
+
   it('requires an exact saved attempt before any callable request', async () => {
     const session = adminPaymentSession();
     mockOfflinePaymentBill();
@@ -357,6 +374,12 @@ describe('Admin Billing V2 offline payment action', () => {
     ['missing transaction id', { ...successfulResult, transactionId: '' }],
     ['missing allocations', { ...successfulResult, allocations: undefined }],
     ['unsafe excess credit', { ...successfulResult, excessCreditMinor: Number.MAX_SAFE_INTEGER + 1 }],
+    ['allocation plus credit total mismatch', { ...successfulResult, excessCreditMinor: 49 }],
+    ['malformed allocation mixed with valid allocation', {
+      ...successfulResult,
+      allocations: [...successfulResult.allocations, { billId: '', amountMinor: 1 }],
+      excessCreditMinor: 0,
+    }],
   ])('rejects %s and leaves the saved attempt unresolved', async (_label, response) => {
     const session = adminPaymentSession();
     mockOfflinePaymentBill();

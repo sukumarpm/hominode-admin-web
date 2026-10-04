@@ -129,13 +129,13 @@ export const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '
 export const strings = (v: unknown): string[] =>
   Array.isArray(v)
     ? [
-        ...new Set(
-          v
-            .filter((x): x is string => typeof x === 'string')
-            .map((x) => x.trim())
-            .filter(Boolean),
-        ),
-      ]
+      ...new Set(
+        v
+          .filter((x): x is string => typeof x === 'string')
+          .map((x) => x.trim())
+          .filter(Boolean),
+      ),
+    ]
     : [];
 export const first = (d: Data, keys: string[], fallback = '') =>
   keys.map((k) => str(d[k])).find(Boolean) || fallback;
@@ -277,7 +277,7 @@ function validScheduleChargeLines(value: unknown): value is { label: string; amo
         safeMinor((line as Data).amountMinor, false),
     ) &&
     value.reduce((total, line) => total + (line as Data).amountMinor as number, 0) <=
-      Number.MAX_SAFE_INTEGER
+    Number.MAX_SAFE_INTEGER
   );
 }
 

@@ -25,7 +25,7 @@ const attempt: OfflinePaymentAttemptV2 = {
 const success = {
   success: true,
   transactionId: 'txn-1',
-  allocations: [{ billId: 'bill-1', amountMinor: 120000 }, { billId: '', amountMinor: 50 }],
+  allocations: [{ billId: 'bill-1', amountMinor: 120000 }],
   excessCreditMinor: 50,
   alreadyCompleted: false,
 };
@@ -127,7 +127,7 @@ describe('Billing V2 offline payment safe foundation', () => {
     expect(() => requireSavedOfflinePaymentAttemptV2(attempt)).toThrow();
   });
 
-  it('validates successful callable results and ignores unusable allocation entries', () => {
+  it('validates complete successful callable results and supports all-credit payments', () => {
     expect(parseOfflinePaymentResultV2(success)).toEqual({
       success: true,
       transactionId: 'txn-1',
@@ -140,6 +140,26 @@ describe('Billing V2 offline payment safe foundation', () => {
     expect(parseOfflinePaymentResultV2({ ...success, allocations: null })).toBeNull();
     expect(parseOfflinePaymentResultV2({ ...success, excessCreditMinor: -1 })).toBeNull();
     expect(parseOfflinePaymentResultV2({ ...success, alreadyCompleted: 'true' })).toBeNull();
+    expect(
+      parseOfflinePaymentResultV2({
+        ...success,
+        allocations: [],
+        excessCreditMinor: 120050,
+      })?.allocations,
+    ).toEqual([]);
+  });
+
+  it.each([
+    ['malformed allocation in otherwise valid list', [{ billId: 'bill-1', amountMinor: 120000 }, null]],
+    ['missing bill ID', [{ amountMinor: 120000 }]],
+    ['blank bill ID', [{ billId: ' ', amountMinor: 120000 }]],
+    ['duplicate bill IDs', [{ billId: 'bill-1', amountMinor: 60000 }, { billId: 'bill-1', amountMinor: 60000 }]],
+    ['zero allocation', [{ billId: 'bill-1', amountMinor: 0 }]],
+    ['negative allocation', [{ billId: 'bill-1', amountMinor: -1 }]],
+    ['fractional allocation', [{ billId: 'bill-1', amountMinor: 1.5 }]],
+    ['unsafe allocation', [{ billId: 'bill-1', amountMinor: Number.MAX_SAFE_INTEGER + 1 }]],
+  ])('rejects %s without dropping malformed entries', (_label, allocations) => {
+    expect(parseOfflinePaymentResultV2({ ...success, allocations })).toBeNull();
   });
 
   it('clears only after validated success, including already-completed success', () => {

@@ -14,9 +14,9 @@ import {
 import { deleteObject, getBlob, getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import { call, firebase } from './firebase';
 import {
-  type CreateFacilityInput,
   type CommunityPaymentConfig,
   type CommunityPaymentConfigInput,
+  type CreateFacilityInput,
   type Data,
   type FacilityImage,
   type FacilityPricingMode,
@@ -25,15 +25,15 @@ import {
   str,
   type UpdateFacilityInput,
 } from './models';
-import { assertResident, assertScope, parseCommunity, parseProfile } from './policy';
 import {
   clearOfflinePaymentAttemptV2,
+  type OfflinePaymentAttemptV2,
+  type OfflinePaymentResultV2,
   parseOfflinePaymentAttemptV2,
   parseOfflinePaymentResultV2,
   requireSavedOfflinePaymentAttemptV2,
-  type OfflinePaymentAttemptV2,
-  type OfflinePaymentResultV2,
 } from './offlinePaymentV2';
+import { assertResident, assertScope, parseCommunity, parseProfile } from './policy';
 
 export async function createEvent(
   session: Session,
@@ -74,8 +74,8 @@ export async function createEvent(
     time: values.time?.trim() || '',
     location: values.location?.trim() || '',
     ...(typeof values.totalCapacity === 'number' &&
-    Number.isFinite(values.totalCapacity) &&
-    values.totalCapacity > 0
+      Number.isFinite(values.totalCapacity) &&
+      values.totalCapacity > 0
       ? { totalCapacity: values.totalCapacity }
       : {}),
     status: 'upcoming',
@@ -125,7 +125,7 @@ export async function uploadEventImages(
     storagePath: string;
     name: string;
   }> = Array.isArray(eventData.images)
-    ? eventData.images
+      ? eventData.images
         .filter(
           (image: unknown): image is {
             url: string;
@@ -143,7 +143,7 @@ export async function uploadEventImages(
           storagePath: image.storagePath,
           name: typeof image.name === 'string' ? image.name : '',
         }))
-    : [];
+      : [];
 
   if (existingImages.length + files.length > 6) {
     throw Error(
@@ -241,11 +241,11 @@ export async function removeEventImage(
 
   const images = Array.isArray(data.images)
     ? data.images.filter(
-        (image: unknown) =>
-          !!image &&
-          typeof image === 'object' &&
-          !Array.isArray(image),
-      )
+      (image: unknown) =>
+        !!image &&
+        typeof image === 'object' &&
+        !Array.isArray(image),
+    )
     : [];
 
   const remaining = images.filter(
@@ -502,6 +502,12 @@ export async function recordOfflinePaymentV2(
   });
   const result = parseOfflinePaymentResultV2(response);
   if (!result) throw Error('The payment response could not be validated. Refresh and reconcile before retrying.');
+  const accountedMinor = result.allocations.reduce(
+    (total, allocation) => total + BigInt(allocation.amountMinor),
+    BigInt(result.excessCreditMinor),
+  );
+  if (accountedMinor !== BigInt(savedAttempt.amountMinor))
+    throw Error('The payment response could not be validated. Refresh and reconcile before retrying.');
   clearOfflinePaymentAttemptV2(savedAttempt.communityId, savedAttempt.residentId, result);
   return result;
 }
@@ -540,18 +546,18 @@ interface CreateRecurringBillingScheduleV2RequestBase {
 export type CreateRecurringBillingScheduleV2Request =
   | (CreateRecurringBillingScheduleV2RequestBase & { scope: 'community' })
   | (CreateRecurringBillingScheduleV2RequestBase & {
-      scope: 'building';
-      buildingId: string;
-    })
+    scope: 'building';
+    buildingId: string;
+  })
   | (CreateRecurringBillingScheduleV2RequestBase & {
-      scope: 'unit';
-      buildingId: string;
-      flatId: string;
-    })
+    scope: 'unit';
+    buildingId: string;
+    flatId: string;
+  })
   | (CreateRecurringBillingScheduleV2RequestBase & {
-      scope: 'units';
-      flatIds: string[];
-    });
+    scope: 'units';
+    flatIds: string[];
+  });
 
 export interface CreateRecurringBillingScheduleV2Result {
   success: true;
@@ -587,18 +593,18 @@ export interface ReviseRecurringBillingScheduleV2RequestBase extends RecurringSc
 export type ReviseRecurringBillingScheduleV2Request =
   | (ReviseRecurringBillingScheduleV2RequestBase & { scope: 'community' })
   | (ReviseRecurringBillingScheduleV2RequestBase & {
-      scope: 'building';
-      buildingId: string;
-    })
+    scope: 'building';
+    buildingId: string;
+  })
   | (ReviseRecurringBillingScheduleV2RequestBase & {
-      scope: 'unit';
-      buildingId: string;
-      flatId: string;
-    })
+    scope: 'unit';
+    buildingId: string;
+    flatId: string;
+  })
   | (ReviseRecurringBillingScheduleV2RequestBase & {
-      scope: 'units';
-      flatIds: string[];
-    });
+    scope: 'units';
+    flatIds: string[];
+  });
 
 export interface ReviseRecurringBillingScheduleV2Result {
   success: true;
@@ -1246,6 +1252,229 @@ export async function stopRecurringBillingScheduleV2(
   });
 }
 
+export interface BillingV2FinancialStatusCounts {
+  pending: number;
+  partially_paid: number;
+  paid: number;
+  overdue: number;
+}
+
+export interface BillingV2FinancialMethodSummary {
+  count: number;
+  totalMinor: number;
+}
+
+export interface BillingV2FinancialReport {
+  success: true;
+  schemaVersion: 1;
+  communityId: string;
+  billingPeriod: string;
+  generatedAtMs: number;
+  liabilitySummary: {
+    billsCount: number;
+    billedMinor: number;
+    paidAllocationMinor: number;
+    creditAppliedMinor: number;
+    outstandingMinor: number;
+    overdueOutstandingMinor: number;
+    statusCounts: BillingV2FinancialStatusCounts;
+  };
+  collectionActivity: {
+    transactionCount: number;
+    totalReceivedMinor: number;
+    methods: {
+      upi: BillingV2FinancialMethodSummary;
+      cash: BillingV2FinancialMethodSummary;
+      bank_transfer: BillingV2FinancialMethodSummary;
+      cheque: BillingV2FinancialMethodSummary;
+    };
+  };
+  creditPosition: {
+    accountsCount: number;
+    residentsWithCreditCount: number;
+    totalAvailableCreditMinor: number;
+  };
+}
+
+interface BillingV2FinancialReportRequest {
+  communityId: string;
+  billingPeriod: string;
+}
+
+function billingV2FinancialReportPeriod(value: unknown): string {
+  if (typeof value !== 'string' || value !== value.trim()) {
+    throw Error('Billing period must be in YYYY-MM format.');
+  }
+  if (!recurringBillingPeriodPattern.test(value)) {
+    throw Error('Billing period must be in YYYY-MM format.');
+  }
+  return value;
+}
+
+function nonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function reportRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function parseBillingV2FinancialMethodSummary(
+  value: unknown,
+): BillingV2FinancialMethodSummary | null {
+  const record = reportRecord(value);
+  if (!record) return null;
+  if (!nonNegativeSafeInteger(record.count)) return null;
+  if (!nonNegativeSafeInteger(record.totalMinor)) return null;
+  return {
+    count: record.count,
+    totalMinor: record.totalMinor,
+  };
+}
+
+function parseBillingV2FinancialStatusCounts(
+  value: unknown,
+): BillingV2FinancialStatusCounts | null {
+  const record = reportRecord(value);
+  if (!record) return null;
+  if (!nonNegativeSafeInteger(record.pending)) return null;
+  if (!nonNegativeSafeInteger(record.partially_paid)) return null;
+  if (!nonNegativeSafeInteger(record.paid)) return null;
+  if (!nonNegativeSafeInteger(record.overdue)) return null;
+  return {
+    pending: record.pending,
+    partially_paid: record.partially_paid,
+    paid: record.paid,
+    overdue: record.overdue,
+  };
+}
+
+function parseBillingV2FinancialReport(
+  value: unknown,
+  expectedCommunityId: string,
+  expectedBillingPeriod: string,
+): BillingV2FinancialReport | null {
+  const root = reportRecord(value);
+  if (!root) return null;
+  if (root.success !== true) return null;
+  if (root.schemaVersion !== 1) return null;
+  if (root.communityId !== expectedCommunityId) return null;
+  if (root.billingPeriod !== expectedBillingPeriod) return null;
+  if (!nonNegativeSafeInteger(root.generatedAtMs)) return null;
+
+  const liabilitySummaryRecord = reportRecord(root.liabilitySummary);
+  const collectionActivityRecord = reportRecord(root.collectionActivity);
+  const creditPositionRecord = reportRecord(root.creditPosition);
+  if (!liabilitySummaryRecord || !collectionActivityRecord || !creditPositionRecord) {
+    return null;
+  }
+
+  if (!nonNegativeSafeInteger(liabilitySummaryRecord.billsCount)) return null;
+  if (!nonNegativeSafeInteger(liabilitySummaryRecord.billedMinor)) return null;
+  if (!nonNegativeSafeInteger(liabilitySummaryRecord.paidAllocationMinor)) return null;
+  if (!nonNegativeSafeInteger(liabilitySummaryRecord.creditAppliedMinor)) return null;
+  if (!nonNegativeSafeInteger(liabilitySummaryRecord.outstandingMinor)) return null;
+  if (!nonNegativeSafeInteger(liabilitySummaryRecord.overdueOutstandingMinor)) return null;
+  const statusCounts = parseBillingV2FinancialStatusCounts(
+    liabilitySummaryRecord.statusCounts,
+  );
+  if (!statusCounts) return null;
+
+  if (!nonNegativeSafeInteger(collectionActivityRecord.transactionCount)) return null;
+  if (!nonNegativeSafeInteger(collectionActivityRecord.totalReceivedMinor)) return null;
+  const methodsRecord = reportRecord(collectionActivityRecord.methods);
+  if (!methodsRecord) return null;
+  const upi = parseBillingV2FinancialMethodSummary(methodsRecord.upi);
+  const cash = parseBillingV2FinancialMethodSummary(methodsRecord.cash);
+  const bankTransfer = parseBillingV2FinancialMethodSummary(methodsRecord.bank_transfer);
+  const cheque = parseBillingV2FinancialMethodSummary(methodsRecord.cheque);
+  if (!upi || !cash || !bankTransfer || !cheque) return null;
+
+  if (!nonNegativeSafeInteger(creditPositionRecord.accountsCount)) return null;
+  if (!nonNegativeSafeInteger(creditPositionRecord.residentsWithCreditCount)) return null;
+  if (!nonNegativeSafeInteger(creditPositionRecord.totalAvailableCreditMinor)) return null;
+
+  return {
+    success: true,
+    schemaVersion: 1,
+    communityId: expectedCommunityId,
+    billingPeriod: expectedBillingPeriod,
+    generatedAtMs: root.generatedAtMs,
+    liabilitySummary: {
+      billsCount: liabilitySummaryRecord.billsCount,
+      billedMinor: liabilitySummaryRecord.billedMinor,
+      paidAllocationMinor: liabilitySummaryRecord.paidAllocationMinor,
+      creditAppliedMinor: liabilitySummaryRecord.creditAppliedMinor,
+      outstandingMinor: liabilitySummaryRecord.outstandingMinor,
+      overdueOutstandingMinor: liabilitySummaryRecord.overdueOutstandingMinor,
+      statusCounts,
+    },
+    collectionActivity: {
+      transactionCount: collectionActivityRecord.transactionCount,
+      totalReceivedMinor: collectionActivityRecord.totalReceivedMinor,
+      methods: {
+        upi,
+        cash,
+        bank_transfer: bankTransfer,
+        cheque,
+      },
+    },
+    creditPosition: {
+      accountsCount: creditPositionRecord.accountsCount,
+      residentsWithCreditCount: creditPositionRecord.residentsWithCreditCount,
+      totalAvailableCreditMinor: creditPositionRecord.totalAvailableCreditMinor,
+    },
+  };
+}
+
+export async function getBillingV2FinancialReport(
+  session: Session,
+  billingPeriod: string,
+  dependencies: {
+    resolveAuthority?: typeof currentAuthority;
+    invokeCall?: (
+      name: string,
+      payload: BillingV2FinancialReportRequest,
+    ) => Promise<unknown>;
+  } = {},
+): Promise<BillingV2FinancialReport> {
+  const resolveAuthority = dependencies.resolveAuthority || currentAuthority;
+  const invokeCall =
+    dependencies.invokeCall ??
+    ((name: string, payload: BillingV2FinancialReportRequest) => call(name, { ...payload }));
+
+  const s = await resolveAuthority(session);
+  if (s.role !== 'admin' || s.profile.role !== 'admin') {
+    throw Error('An administrator is required.');
+  }
+  if (!s.community) {
+    throw Error('Select an authorized community.');
+  }
+  if (!s.profile.authorizedCommunityIds.includes(s.community.id)) {
+    throw Error('Select an authorized community.');
+  }
+
+  const period = billingV2FinancialReportPeriod(billingPeriod);
+  const payload: BillingV2FinancialReportRequest = {
+    communityId: s.community.id,
+    billingPeriod: period,
+  };
+
+  let response: unknown;
+  try {
+    response = await invokeCall('getBillingV2FinancialReport', payload);
+  } catch {
+    throw Error('Billing V2 financial report request failed.');
+  }
+
+  const report = parseBillingV2FinancialReport(response, payload.communityId, payload.billingPeriod);
+  if (!report) {
+    throw Error('The Billing V2 financial report response could not be validated.');
+  }
+  return report;
+}
+
 function required(v: string, label: string) {
   if (!v.trim()) throw Error(label + ' is required.');
   return v.trim();
@@ -1585,8 +1814,8 @@ export async function updateFacility(
   if (pricingEdited) {
     const existingMode: FacilityPricingMode =
       data.pricingMode === 'free' ||
-      data.pricingMode === 'flat' ||
-      data.pricingMode === 'resident_type'
+        data.pricingMode === 'flat' ||
+        data.pricingMode === 'resident_type'
         ? data.pricingMode
         : data.isFree === true
           ? 'free'
@@ -1830,8 +2059,8 @@ export async function updateEvent(
     time: values.time?.trim() || '',
     location: values.location?.trim() || '',
     ...(typeof values.totalCapacity === 'number' &&
-    Number.isFinite(values.totalCapacity) &&
-    values.totalCapacity > 0
+      Number.isFinite(values.totalCapacity) &&
+      values.totalCapacity > 0
       ? { totalCapacity: values.totalCapacity }
       : {}),
     status: eventStatus,
@@ -1968,8 +2197,8 @@ export async function submitProof(session: Session, billId: string, file: File) 
   } catch {
     throw Error(
       'The receipt uploaded, but the payment submission failed. Contact management with reference ' +
-        payment.id +
-        ' before retrying.',
+      payment.id +
+      ' before retrying.',
     );
   }
 }

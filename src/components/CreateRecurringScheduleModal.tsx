@@ -242,7 +242,7 @@ export function CreateRecurringScheduleModal({
         line.code === 'custom'
           ? line.customLabel.replace(/\s+/g, ' ').trim()
           : standardChargeLabelsByCode.get(line.code as Exclude<RecurringChargeCodeV2, 'custom'>) ||
-            '';
+          '';
       if (!line.lineId) throw Error(`Charge line ${index + 1} ID is required.`);
       if (!label) throw Error(`Charge line ${index + 1} label is required.`);
       const amountMinor = parseRecurringAmountInrToMinorUnits(line.amountInr);
@@ -277,21 +277,21 @@ export function CreateRecurringScheduleModal({
         ? { ...basePayload, scope }
         : scope === 'building'
           ? (() => {
-              if (!buildingId) throw Error('Select a building.');
-              return { ...basePayload, scope, buildingId };
-            })()
+            if (!buildingId) throw Error('Select a building.');
+            return { ...basePayload, scope, buildingId };
+          })()
           : scope === 'unit'
             ? (() => {
-                if (!buildingId) throw Error('Select a building.');
-                if (!flatId) throw Error('Select a unit.');
-                return { ...basePayload, scope, buildingId, flatId };
-              })()
+              if (!buildingId) throw Error('Select a building.');
+              if (!flatId) throw Error('Select a unit.');
+              return { ...basePayload, scope, buildingId, flatId };
+            })()
             : (() => {
-                const flatIds = [...new Set(selectedFlatIds)];
-                if (flatIds.length === 0) throw Error('Select at least one unit.');
-                if (flatIds.length > 5000) throw Error('Selected units cannot exceed 5000.');
-                return { ...basePayload, scope, flatIds };
-              })();
+              const flatIds = [...new Set(selectedFlatIds)];
+              if (flatIds.length === 0) throw Error('Select at least one unit.');
+              if (flatIds.length > 5000) throw Error('Selected units cannot exceed 5000.');
+              return { ...basePayload, scope, flatIds };
+            })();
 
     const payload = normalizeRecurringBillingScheduleRequest(scopedPayload);
 

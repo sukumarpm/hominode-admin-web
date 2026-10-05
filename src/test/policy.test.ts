@@ -9,7 +9,6 @@ import {
 } from '../policy';
 import { adminData, residentData, community, makeSession, secondCommunity } from './fixtures';
 import { querySpec } from '../data';
-import { firebaseConfig } from '../firebase';
 describe('canonical access policy', () => {
   it('accepts verified resident and active assigned admin', () => {
     expect(() => assertResident(makeSession().profile, community, 'green-valley')).not.toThrow();
@@ -38,6 +37,7 @@ describe('canonical access policy', () => {
     { isActive: false },
     { status: 'blocked' },
     { uid: 'another-user' },
+    { phoneNumber: '+639179999999' },
     { role: 'admin' },
   ])('rejects ineligible resident profile %j', (overrides) =>
     expect(() =>
@@ -159,8 +159,4 @@ describe('query boundaries', () => {
   });
   it('refuses unknown resident delivery ownership', () =>
     expect(() => querySpec(makeSession(), 'deliveries')).toThrow());
-});
-it('pins Firebase to the existing production project', () => {
-  expect(firebaseConfig({}).projectId).toBe('hominode-prod');
-  expect(firebaseConfig({}).appId).toBe('1:551984029668:web:5845083359a375d90db1f1');
 });

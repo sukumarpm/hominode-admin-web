@@ -4,10 +4,17 @@ import { getAuth } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { getStorage } from 'firebase/storage';
+function requiredConfig(env: Record<string, string | undefined>, key: string): string {
+  const value = env[key]?.trim();
+  if (!value) throw Error(`Web authentication configuration is missing ${key}.`);
+  return value;
+}
+
+// Require explicit public configuration in every mode, including production.
 export function firebaseConfig(env: Record<string, string | undefined>) {
   return {
-    apiKey: env.VITE_FIREBASE_API_KEY,
-    appId: env.VITE_FIREBASE_APP_ID || '1:551984029668:web:5845083359a375d90db1f1',
+    apiKey: requiredConfig(env, 'VITE_FIREBASE_API_KEY'),
+    appId: requiredConfig(env, 'VITE_FIREBASE_APP_ID'),
     projectId: 'hominode-prod',
     authDomain: 'hominode-prod.firebaseapp.com',
     storageBucket: 'hominode-prod.firebasestorage.app',
@@ -15,10 +22,12 @@ export function firebaseConfig(env: Record<string, string | undefined>) {
   };
 }
 function initialize() {
-  const app = getApps()[0] || initializeApp(firebaseConfig(import.meta.env));
+  // Validate before using even an existing Firebase app or initializing any service.
+  const config = firebaseConfig(import.meta.env);
+  const siteKey = requiredConfig(import.meta.env, 'VITE_RECAPTCHA_ENTERPRISE_SITE_KEY');
+  const app = getApps()[0] || initializeApp(config);
 
-  // Local development only: use Firebase App Check debug provider.
-  // Production builds continue using reCAPTCHA Enterprise normally.
+  // Vite's built-in DEV flag is the only debug-provider gate.
   if (import.meta.env.DEV) {
     (
       globalThis as typeof globalThis & {
@@ -28,10 +37,7 @@ function initialize() {
   }
 
   initializeAppCheck(app, {
-    provider: new ReCaptchaEnterpriseProvider(
-      import.meta.env.VITE_RECAPTCHA_ENTERPRISE_SITE_KEY ||
-        '6LfLtJstAAAAAFM2jk9KvFB-2f7zUr9DCNIl7HqN',
-    ),
+    provider: new ReCaptchaEnterpriseProvider(siteKey),
     isTokenAutoRefreshEnabled: true,
   });
   return {
@@ -47,4 +53,4 @@ export const firebase = () => instance ?? (instance = initialize());
 export async function call<T>(name: string, data: Record<string, unknown> = {}): Promise<T> {
   return (await httpsCallable<Record<string, unknown>, T>(firebase().functions, name)(data)).data;
 }
-// No debug App Check provider, emulator bypass or appVerificationDisabledForTesting.
+// Production never enables the App Check debug provider or Phone Auth bypasses.

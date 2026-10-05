@@ -66,7 +66,7 @@ export function Login({ communityName }: { communityName?: string }) {
         if (!phone) throw Error('Enter a valid phone number.');
         verifier.current?.clear();
         verifier.current = new RecaptchaVerifier(firebase().auth, 'phone-recaptcha', {
-          size: 'normal',
+          size: 'invisible',
         });
         const result = await signInWithPhoneNumber(firebase().auth, phone, verifier.current);
         if (mounted.current) {
@@ -75,8 +75,6 @@ export function Login({ communityName }: { communityName?: string }) {
         }
       }
     } catch (e) {
-      console.error('Admin phone authentication failed:', e);
-
       if (mounted.current) {
         setMessage(friendlyPhoneAuthError(e));
       }

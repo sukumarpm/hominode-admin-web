@@ -631,7 +631,13 @@ export interface RecurringLifecycleMutationResultV2 {
 
 const recurringBillingPeriodPattern = /^(\d{4})-(0[1-9]|1[0-2])$/;
 const recurringIdempotencyKeyPattern = /^[A-Za-z0-9_-]{1,128}$/;
-const recurringControlCharPattern = /[\u0000-\u001F\u007F]/;
+function hasRecurringControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
 const recurringChargeCodeToLabel: Record<Exclude<RecurringChargeCodeV2, 'custom'>, string> = {
   maintenance: 'Maintenance',
   water: 'Water',
@@ -658,7 +664,7 @@ function recurringDocId(value: unknown, label: string): string {
     !id ||
     utf8ByteLength(id) > 128 ||
     id.includes('/') ||
-    recurringControlCharPattern.test(id) ||
+    hasRecurringControlCharacter(id) ||
     /^\.{1,2}$/.test(id) ||
     /^__.*__$/.test(id)
   ) {

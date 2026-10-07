@@ -215,7 +215,13 @@ export function classifyV2Bill(data: Data): V2BillClassification {
 export type V2RecurringScheduleStatus = 'active' | 'paused' | 'stopped';
 export type V2RecurringScheduleScope = 'community' | 'building' | 'unit' | 'units';
 const billingPeriodPattern = /^(\d{4})-(0[1-9]|1[0-2])$/;
-const recurringControlCharPattern = /[\u0000-\u001F\u007F]/;
+function hasRecurringControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
 const recurringChargeCodeToLabel = {
   maintenance: 'Maintenance',
   water: 'Water',
@@ -244,7 +250,7 @@ function isRecurringDocumentId(value: unknown): value is string {
     !!value &&
     utf8ByteLength(value) <= 128 &&
     !value.includes('/') &&
-    !recurringControlCharPattern.test(value) &&
+    !hasRecurringControlCharacter(value) &&
     !/^\.{1,2}$/.test(value) &&
     !/^__.*__$/.test(value)
   );

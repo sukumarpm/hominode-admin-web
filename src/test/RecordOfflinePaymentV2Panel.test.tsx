@@ -139,7 +139,7 @@ describe('RecordOfflinePaymentV2Panel', () => {
     expect(screen.queryByRole('button', { name: 'Record Offline Payment' })).toBeNull();
   });
 
-  it.each(['failed', 'completed'])('allows an eligible bill when its proof is %s, not pending', async (_status) => {
+  it('allows an eligible bill when no proof is pending', async () => {
     panel({ hasPendingProof: false });
     expect(await screen.findByRole('button', { name: 'Record Offline Payment' })).toBeTruthy();
   });

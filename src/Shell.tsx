@@ -40,8 +40,7 @@ function AuthenticatedShell({
   const resident = s.role === 'resident';
   const base = resident ? '/' + s.community!.slug + '/' : '/';
 
-  const subscription =
-    s.role === 'admin' ? useSubscription() : { entitlement: null, loading: false, error: '' };
+  const subscription = useSubscription();
 
   const rawNav = resident ? residentNav : s.role === 'superAdmin' ? platformNav : adminNav;
 

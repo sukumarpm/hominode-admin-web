@@ -58,6 +58,7 @@ import {
   type Row,
   type Session,
 } from './models';
+import { billingReportMetrics } from './reportMetrics';
 import { useAuth } from './session';
 import { canUseFeature } from './subscription';
 import { useSubscription } from './subscriptionContext';
@@ -2355,17 +2356,17 @@ function ReportData({ s }: { s: Session }) {
 
   const countValue = (r: typeof bills) => (r.loading ? '…' : r.error ? '—' : r.rows.length);
 
-  const billed = bills.rows.reduce((sum, row) => sum + amount(row.data), 0);
-  const collected = bills.rows
-    .filter((row) => ['paid', 'settled', 'approved', 'completed'].includes(status(row.data)))
-    .reduce((sum, row) => sum + amount(row.data), 0);
-  const pending = bills.rows
-    .filter((row) => ['pending', 'due', 'unpaid'].includes(status(row.data)))
-    .reduce((sum, row) => sum + amount(row.data), 0);
-  const overdue = bills.rows
-    .filter((row) => status(row.data) === 'overdue')
-    .reduce((sum, row) => sum + amount(row.data), 0);
-  const collectionRate = billed > 0 ? Math.round((collected / billed) * 100) : 0;
+  const {
+    billed,
+    collected,
+    credited,
+    pending,
+    overdue,
+    collectionRate,
+    paidBills,
+    partialBills,
+    outstandingBills,
+  } = billingReportMetrics(bills.rows);
 
   const occupied = units.rows.filter((row) => status(row.data) === 'occupied').length;
   const vacant = units.rows.filter((row) => status(row.data) === 'vacant').length;
@@ -2414,8 +2415,12 @@ function ReportData({ s }: { s: Session }) {
       ['Bills', bills.rows.length],
       ['Billed amount', billed],
       ['Collected amount', collected],
+      ['Credits applied', credited],
       ['Pending amount', pending],
       ['Overdue amount', overdue],
+      ['Paid bills', paidBills],
+      ['Partially paid bills', partialBills],
+      ['Outstanding bills', outstandingBills],
       ['Collection rate (%)', collectionRate],
       ['Completed deliveries', completedDeliveries],
       ['Active deliveries', activeDeliveries],
@@ -2470,8 +2475,12 @@ function ReportData({ s }: { s: Session }) {
             <div className="report-kpi-list">
               <div><span>Total billed</span><strong>{money(billed)}</strong></div>
               <div><span>Collected</span><strong>{money(collected)}</strong></div>
+              {credited > 0 && <div><span>Credits applied</span><strong>{money(credited)}</strong></div>}
               <div><span>Pending</span><strong>{money(pending)}</strong></div>
               <div><span>Overdue</span><strong>{money(overdue)}</strong></div>
+              <div><span>Paid bills</span><strong>{paidBills}</strong></div>
+              <div><span>Partially paid</span><strong>{partialBills}</strong></div>
+              <div><span>Outstanding bills</span><strong>{outstandingBills}</strong></div>
               <div className="report-highlight">
                 <span>Collection rate</span><strong>{collectionRate}%</strong>
               </div>

@@ -6,13 +6,13 @@
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   font-weight: 400;
-  background: #f0f5fc;
+  background: #f4f8fb;
   font-size: 14px;
-  --accent: #0865ff;
+  --accent: #0e4778;
   --muted: #5a6b88;
-  --nav: #0d2547;
+  --nav: #061c4c;
   --line: #e4ebf6;
-  --canvas: #eaf3ff;
+  --canvas: #eaf7fa;
   --shadow: 0 5px 24px #304e8410;
 }
 
@@ -70,7 +70,7 @@ button:hover:not(:disabled),
 }
 
 :focus-visible {
-  outline: 3px solid #1176e8;
+  outline: 3px solid #3aa6c8;
   outline-offset: 4px;
 }
 
@@ -265,7 +265,7 @@ dd {
   width: 40px;
   height: 40px;
   border-radius: 50%;
-  background: linear-gradient(135deg, #58a6ff, #055bff);
+  background: linear-gradient(135deg, #3aa6c8, #0e4778);
   color: white;
   align-items: center;
   justify-content: center;
@@ -282,8 +282,8 @@ dd {
 .app {
   min-height: 100vh;
   background:
-    radial-gradient(ellipse at 25% 0%, #b8d7ff 0, transparent 52%),
-    linear-gradient(120deg, #eef7ff, #e3f0ff);
+    radial-gradient(ellipse at 25% 0%, #c9edf5 0, transparent 52%),
+    linear-gradient(120deg, #f4f9fb, #eaf7fa);
   --sidebar: 214px;
 }
 
@@ -292,7 +292,7 @@ dd {
   height: 100dvh;
   position: fixed;
   inset: 0 auto 0 0;
-  background: linear-gradient(135deg, #092246, #0e2644);
+  background: linear-gradient(135deg, #061c4c, #0e4778);
   color: #d9e6fa;
   display: flex;
   flex-direction: column;
@@ -315,7 +315,7 @@ dd {
   height: 84px;
   object-fit: contain;
   width: 92px;
-  filter: drop-shadow(0 0 8px #13d5fa4d);
+  filter: drop-shadow(0 0 8px #3aa6c84d);
 }
 
 .brand strong {
@@ -359,9 +359,9 @@ dd {
 }
 
 .sidebar nav a.active {
-  background: linear-gradient(115deg, #239aff, #0f5bff);
+  background: linear-gradient(115deg, #3aa6c8, #0e4778);
   color: white;
-  box-shadow: 0 4px 15px #0564ff35;
+  box-shadow: 0 4px 15px #0e477835;
 }
 
 .sidebar-profile {
@@ -460,7 +460,7 @@ dd {
 }
 
 .search-results a:hover {
-  background: #f0f5ff;
+  background: #eaf7fa;
 }
 
 .toolbar-end {
@@ -637,7 +637,7 @@ main {
 
 .period-label {
   padding: 8px 12px;
-  border: 1px solid #d9e7fe;
+  border: 1px solid #cfe8ef;
   border-radius: 13px;
   font-size: 10px;
   white-space: nowrap;
@@ -657,14 +657,14 @@ main {
   z-index: 2;
   width: 130px;
   height: 130px;
-  border: 1px solid #c4ddff;
+  border: 1px solid #c9e7ef;
   border-radius: 50%;
   display: flex;
   flex-direction: column;
   justify-content: center;
   align-items: center;
   gap: 7px;
-  background: linear-gradient(140deg, #ffffff, #f5fbff);
+  background: linear-gradient(140deg, #ffffff, #f2f9fb);
   flex-shrink: 1;
 }
 
@@ -840,7 +840,7 @@ main {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #1866ff;
+  background: #0e4778;
   margin-right: 7px;
 }
 
@@ -861,7 +861,7 @@ main {
 
 /* Total units */
 .occupancy dl > div:nth-child(5) dt:before {
-  background: #1866ff;
+  background: #0e4778;
 }
 
 .metrics-grid {
@@ -899,7 +899,7 @@ main {
   height: 43px;
   border-radius: 50%;
   background: #dbeaff;
-  color: #0865ff;
+  color: #0e4778;
   flex-shrink: 0;
 }
 
@@ -3325,7 +3325,7 @@ dialog::backdrop {
   place-items: center;
   padding: 10px;
   background: #eaf2ff;
-  color: #0865ff;
+  color: #0e4778;
   flex: 0 0 auto;
 }
 
@@ -3858,7 +3858,7 @@ dialog:has(.facility-admin-form) > *:not(.dialog-heading) {
   align-items: center;
   justify-content: center;
   background: #eaf3ff;
-  color: #0865ff;
+  color: #0e4778;
   flex-shrink: 0;
 }
 
@@ -3942,7 +3942,7 @@ dialog:has(.facility-admin-form) > *:not(.dialog-heading) {
   padding: 6px 9px;
   border-radius: 999px;
   background: #edf4ff;
-  color: #1769db;
+  color: #0e4778;
   font-size: 10px;
   font-weight: 700;
   white-space: nowrap;
@@ -3998,7 +3998,7 @@ dialog:has(.facility-admin-form) > *:not(.dialog-heading) {
 .facility-generate-button {
   min-height: 39px;
   background: #e2efff;
-  color: #0865ff;
+  color: #0e4778;
   border-color: #cce2ff;
   font-weight: 700;
 }
@@ -4085,7 +4085,7 @@ dialog:has(.facility-admin-form) > *:not(.dialog-heading) {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  color: #0865ff;
+  color: #0e4778;
   border-color: #cee1ff;
   background: #f5f9ff;
   font-weight: 700;
@@ -4118,7 +4118,7 @@ dialog:has(.facility-admin-form) > *:not(.dialog-heading) {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  color: #0865ff;
+  color: #0e4778;
 }
 
 .facility-choice-grid {
@@ -4176,8 +4176,8 @@ dialog:has(.facility-admin-form) > *:not(.dialog-heading) {
 }
 
 .facility-choice-card.selected .facility-choice-check {
-  background: #0865ff;
-  border-color: #0865ff;
+  background: #0e4778;
+  border-color: #0e4778;
   color: #fff;
 }
 
@@ -4576,7 +4576,7 @@ dialog:has(.facility-admin-form) > *:not(.dialog-heading) {
   padding: 6px 9px;
   border-radius: 999px;
   background: #eaf3ff;
-  color: #1769db;
+  color: #0e4778;
   font-size: 10px;
   font-weight: 800;
 }
@@ -4587,7 +4587,7 @@ dialog:has(.facility-admin-form) > *:not(.dialog-heading) {
   gap: 8px;
   border-color: #cfe1fb;
   background: #fff;
-  color: #0865ff;
+  color: #0e4778;
   font-weight: 700;
   font-size: 11px;
 }
@@ -4778,7 +4778,7 @@ dialog:has(.facility-admin-form) > *:not(.dialog-heading) {
 }
 
 .facility-detail-thumbnails button.active {
-  border-color: #0865ff;
+  border-color: #0e4778;
   box-shadow: 0 0 0 2px rgba(8, 101, 255, 0.1);
 }
 
@@ -4858,7 +4858,7 @@ dialog:has(.facility-admin-form) > *:not(.dialog-heading) {
   padding: 5px 9px;
   border-radius: 999px;
   background: #e9f2ff;
-  color: #0865ff !important;
+  color: #0e4778 !important;
   white-space: nowrap;
   font-weight: 600;
 }
@@ -4899,7 +4899,7 @@ dialog:has(.facility-admin-form) > *:not(.dialog-heading) {
   height: 46px;
   border-radius: 13px;
   background: #dcecff;
-  color: #0865ff;
+  color: #0e4778;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -4927,7 +4927,7 @@ dialog:has(.facility-admin-form) > *:not(.dialog-heading) {
 .event-image-picker-action {
   border: 1px solid #c8ddfb;
   background: #fff;
-  color: #0865ff;
+  color: #0e4778;
   border-radius: 9px;
   padding: 8px 12px;
   font-size: 11px;
@@ -5080,7 +5080,7 @@ dialog:has(.facility-admin-form) > *:not(.dialog-heading) {
   padding: 5px 9px;
   border-radius: 999px;
   background: #edf5ff;
-  color: #1769d2;
+  color: #0e4778;
   font-size: 10px;
   font-weight: 700;
   overflow: hidden;
@@ -5158,7 +5158,7 @@ dialog:has(.facility-admin-form) > *:not(.dialog-heading) {
   padding: 6px 10px;
   border-radius: 999px;
   background: #edf5ff;
-  color: #1769d2;
+  color: #0e4778;
   font-size: 10px;
   font-weight: 700;
 }
@@ -5190,7 +5190,7 @@ dialog:has(.facility-admin-form) > *:not(.dialog-heading) {
   justify-content: center;
   flex-shrink: 0;
   background: #dfeeff;
-  color: #0865ff;
+  color: #0e4778;
   font-size: 22px;
 }
 

@@ -1627,7 +1627,7 @@ dialog::backdrop {
   font-size: 42px;
 }
 
-.report-summary-grid {
+.report-grid.report-summary-grid {
   grid-template-columns: repeat(6, minmax(0, 1fr));
   margin-bottom: 20px;
 }
@@ -1686,13 +1686,13 @@ dialog::backdrop {
 }
 
 @media (max-width: 1180px) {
-  .report-summary-grid {
+  .report-grid.report-summary-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 760px) {
-  .report-summary-grid,
+  .report-grid.report-summary-grid,
   .report-analytics-grid {
     grid-template-columns: 1fr;
   }

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BillingV2FinancialReport } from '../actions';
 import type { Session } from '../models';
@@ -110,6 +110,75 @@ beforeEach(() => {
 });
 
 describe('ReportsPage Billing V2 financial report', () => {
+  it('adds operational analytics without deriving financial totals from bill rows', async () => {
+    const session = makeSession('admin');
+    reportActions.getReport.mockResolvedValue(
+      financialReport(session.community!.id, currentLocalMonth()),
+    );
+    const operationalRows: Record<string, Array<Record<string, unknown>>> = {
+      billing: [{ amountMinor: 99999999, paidAmountMinor: 99999999, status: 'paid' }],
+      units: [
+        { status: 'occupied' },
+        { status: 'vacant' },
+        { status: 'reserved' },
+        { status: 'maintenance' },
+      ],
+      complaints: [{ status: 'resolved' }, { status: 'closed' }, { status: 'open' }],
+      deliveries: [{ status: 'collected' }, { status: 'delivered' }, { status: 'pending' }],
+      bookings: [{ status: 'confirmed' }],
+    };
+    rowMocks.useRows.mockImplementation((_session: Session, module: string) => ({
+      rows: (operationalRows[module] ?? []).map((data, index) => ({ id: String(index), data })),
+      loading: false,
+      error: '',
+    }));
+    renderReports(session);
+    expect(await screen.findByText('₹1,234.56')).toBeInTheDocument();
+    expect(screen.queryByText('₹9,99,999.99')).not.toBeInTheDocument();
+    const occupancy = screen.getByRole('heading', { name: 'Community Occupancy' }).parentElement!.parentElement!;
+    expect(within(occupancy).getByText('25%')).toBeInTheDocument();
+    const complaints = screen.getByRole('heading', { name: 'Complaint resolution' }).parentElement!.parentElement!;
+    expect(within(complaints).getByText('67%')).toBeInTheDocument();
+    const deliveries = screen.getByRole('heading', { name: 'Delivery activity' }).parentElement!.parentElement!;
+    expect(within(deliveries).getByText('Completed / collected').parentElement).toHaveTextContent(
+      '2',
+    );
+    expect(screen.getByRole('heading', { name: 'Bookings' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Export summary' })).toBeEnabled();
+  });
+
+  it.each(['units', 'deliveries', 'bookings'])(
+    'blocks incomplete operational exports when %s is loading or fails, without blocking canonical finance',
+    async (module) => {
+      const session = makeSession('admin');
+      reportActions.getReport.mockResolvedValue(
+        financialReport(session.community!.id, currentLocalMonth()),
+      );
+      let loading = true;
+      rowMocks.useRows.mockImplementation((_session: Session, requested: string) => ({
+        rows: [],
+        loading: requested === module && loading,
+        error: requested === module && !loading ? 'Operational data unavailable.' : '',
+      }));
+      const view = renderReports(session);
+      expect(await screen.findByText('₹1,234.56')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Export summary' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Export financial CSV' })).toBeEnabled();
+      loading = false;
+      view.rerender(
+        <AuthContext value={authState(session)}>
+          <ReportsPage />
+        </AuthContext>,
+      );
+      expect(screen.getByRole('button', { name: 'Export summary' })).toBeDisabled();
+      expect(screen.getByText(/Some analytics are unavailable/)).toBeInTheDocument();
+      expect(screen.getByText('₹1,234.56')).toBeInTheDocument();
+      if (module === 'units') expect(screen.queryByText('Occupancy rate')).not.toBeInTheDocument();
+      if (module === 'deliveries')
+        expect(screen.queryByText('Completed / collected')).not.toBeInTheDocument();
+    },
+  );
+
   it('requests the current local month for the selected community and renders canonical values in minor-unit INR', async () => {
     const session = makeSession('admin');
     const communityId = session.community!.id;
@@ -162,8 +231,11 @@ describe('ReportsPage Billing V2 financial report', () => {
     expect(screen.getByRole('heading', { name: 'Payment methods' })).toBeInTheDocument();
     expect([...new Set(rowMocks.useRows.mock.calls.map(([, module]) => module))].sort()).toEqual([
       'billing',
+      'bookings',
       'complaints',
+      'deliveries',
       'residents',
+      'units',
       'visitors',
     ]);
   });

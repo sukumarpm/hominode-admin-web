@@ -2530,12 +2530,38 @@ function ReportData({ s }: { s: Session }) {
   const bills = useRows(s, 'billing'),
     residents = useRows(s, 'residents'),
     visitors = useRows(s, 'visitors'),
-    complaints = useRows(s, 'complaints');
+    complaints = useRows(s, 'complaints'),
+    deliveries = useRows(s, 'deliveries'),
+    units = useRows(s, 'units'),
+    bookings = useRows(s, 'bookings');
+
+  const resources = [bills, residents, visitors, complaints, deliveries, units, bookings];
+  const loading = resources.some((resource) => resource.loading);
+  const hasError = resources.some((resource) => !!resource.error);
+
+  const occupied = units.rows.filter((row) => status(row.data) === 'occupied').length;
+  const vacant = units.rows.filter((row) => status(row.data) === 'vacant').length;
+  const reserved = units.rows.filter((row) => status(row.data) === 'reserved').length;
+  const maintenance = units.rows.filter((row) => status(row.data) === 'maintenance').length;
+  const occupancyRate = units.rows.length ? Math.round((occupied / units.rows.length) * 100) : 0;
+
+  const resolvedComplaints = complaints.rows.filter((row) =>
+    ['resolved', 'closed', 'completed'].includes(status(row.data)),
+  ).length;
+  const activeComplaints = Math.max(0, complaints.rows.length - resolvedComplaints);
+
+  const completedDeliveries = deliveries.rows.filter((row) =>
+    ['collected', 'delivered', 'completed'].includes(status(row.data)),
+  ).length;
+  const activeDeliveries = Math.max(0, deliveries.rows.length - completedDeliveries);
+
   const records = [
     ['Residents', residents],
     ['Visitors', visitors],
+    ['Deliveries', deliveries],
     ['Complaints', complaints],
     ['Bills', bills],
+    ['Bookings', bookings],
   ] as const;
   const currentMonth = new Date();
   const [billingPeriod, setBillingPeriod] = useState(
@@ -2618,8 +2644,20 @@ function ReportData({ s }: { s: Session }) {
     URL.revokeObjectURL(url);
   }
   function exportReport() {
-    const csv =
-      'Metric,Count\r\n' + records.map(([name, r]) => name + ',' + r.rows.length).join('\r\n');
+    const rows: [string, number][] = [
+      ...records.map(([name, resource]): [string, number] => [name, resource.rows.length]),
+      ['Resolved complaints', resolvedComplaints],
+      ['Active complaints', activeComplaints],
+      ['Units', units.rows.length],
+      ['Occupied units', occupied],
+      ['Vacant units', vacant],
+      ['Reserved units', reserved],
+      ['Maintenance units', maintenance],
+      ['Occupancy rate (%)', occupancyRate],
+      ['Completed deliveries', completedDeliveries],
+      ['Active deliveries', activeDeliveries],
+    ];
+    const csv = 'Metric,Count\r\n' + rows.map(([name, value]) => name + ',' + value).join('\r\n');
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
     const a = document.createElement('a');
     a.href = url;
@@ -2680,18 +2718,14 @@ function ReportData({ s }: { s: Session }) {
         <header className="community-overview-header">
           <div>
             <h2 id="community-overview-title">Community overview</h2>
-            <p>Current counts from operational records.</p>
+            <p>Operational and occupancy indicators from current community records.</p>
           </div>
-          <button
-            className="primary"
-            disabled={records.some(([, r]) => r.loading || !!r.error)}
-            onClick={exportReport}
-          >
+          <button className="primary" disabled={loading || hasError} onClick={exportReport}>
             <Download size={18} />
             Export summary
           </button>
         </header>
-        <div className="community-overview-grid">
+        <div className="report-grid report-summary-grid">
           {records.map(([title, r]) => (
             <Card title={title} key={title} className="community-overview-card">
               {r.loading ? (
@@ -2704,6 +2738,103 @@ function ReportData({ s }: { s: Session }) {
             </Card>
           ))}
         </div>
+        <div className="report-analytics-grid">
+          <Card title="Community Occupancy">
+            {units.loading ? (
+              <p role="status">Loading occupancy…</p>
+            ) : units.error ? (
+              <p role="alert">{units.error}</p>
+            ) : (
+              <div className="report-kpi-list">
+                <div>
+                  <span>Total units</span>
+                  <strong>{units.rows.length}</strong>
+                </div>
+                <div>
+                  <span>Occupied</span>
+                  <strong>{occupied}</strong>
+                </div>
+                <div>
+                  <span>Vacant</span>
+                  <strong>{vacant}</strong>
+                </div>
+                <div>
+                  <span>Reserved</span>
+                  <strong>{reserved}</strong>
+                </div>
+                <div>
+                  <span>Maintenance</span>
+                  <strong>{maintenance}</strong>
+                </div>
+                <div className="report-highlight">
+                  <span>Occupancy rate</span>
+                  <strong>{occupancyRate}%</strong>
+                </div>
+              </div>
+            )}
+          </Card>
+
+          <Card title="Complaint resolution">
+            {complaints.loading ? (
+              <p role="status">Loading complaint analytics…</p>
+            ) : complaints.error ? (
+              <p role="alert">{complaints.error}</p>
+            ) : (
+              <div className="report-kpi-list">
+                <div>
+                  <span>Total complaints</span>
+                  <strong>{complaints.rows.length}</strong>
+                </div>
+                <div>
+                  <span>Resolved / closed</span>
+                  <strong>{resolvedComplaints}</strong>
+                </div>
+                <div>
+                  <span>Active</span>
+                  <strong>{activeComplaints}</strong>
+                </div>
+                <div className="report-highlight">
+                  <span>Resolution rate</span>
+                  <strong>
+                    {complaints.rows.length
+                      ? Math.round((resolvedComplaints / complaints.rows.length) * 100)
+                      : 0}
+                    %
+                  </strong>
+                </div>
+              </div>
+            )}
+          </Card>
+
+          <Card title="Delivery activity">
+            {deliveries.loading ? (
+              <p role="status">Loading delivery analytics…</p>
+            ) : deliveries.error ? (
+              <p role="alert">{deliveries.error}</p>
+            ) : (
+              <div className="report-kpi-list">
+                <div>
+                  <span>Total parcel records</span>
+                  <strong>{deliveries.rows.length}</strong>
+                </div>
+                <div>
+                  <span>Completed / collected</span>
+                  <strong>{completedDeliveries}</strong>
+                </div>
+                <div>
+                  <span>Active</span>
+                  <strong>{activeDeliveries}</strong>
+                </div>
+              </div>
+            )}
+          </Card>
+        </div>
+
+        {hasError && !loading && (
+          <p className="report-note" role="status">
+            Some analytics are unavailable because one or more data sources could not be loaded.
+          </p>
+        )}
       </section>
     </>
   );

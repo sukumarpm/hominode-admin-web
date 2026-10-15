@@ -98,6 +98,23 @@ describe('canonical access policy', () => {
   it('accepts canonical slugs', () => expect(validSlug('green-valley')).toBe(true));
 });
 describe('query boundaries', () => {
+  it('uses the shared community-scoped collection for announcements and events', () => {
+    const session = makeSession('admin');
+    expect(querySpec(session, 'notices')).toEqual({
+      collection: 'events_announcements',
+      filters: [
+        ['communityId', '==', 'community-1'],
+        ['type', '==', 'announcement'],
+      ],
+    });
+    expect(querySpec(session, 'events')).toEqual({
+      collection: 'events_announcements',
+      filters: [
+        ['communityId', '==', 'community-1'],
+        ['type', '==', 'event'],
+      ],
+    });
+  });
   it('scopes every operational admin collection', () => {
     for (const module of [
       'visitors',

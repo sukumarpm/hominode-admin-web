@@ -172,7 +172,7 @@ export function RecordOfflinePaymentV2Panel({
   if (success && completedAttempt) {
     const methodLabel = methods.find((method) => method.value === completedAttempt.paymentMethod)?.label;
     return (
-      <section className="record-payment-panel" aria-label="V2 offline payment result">
+      <section className="record-payment-panel" aria-label="Offline payment result">
         {success.alreadyCompleted ? (
           <p role="status">
             This previously submitted payment was already completed. The saved request was recovered
@@ -199,7 +199,7 @@ export function RecordOfflinePaymentV2Panel({
   }
 
   if (!financiallyEligible)
-    return <p role="status">Offline payment unavailable for this V2 bill.</p>;
+    return <p role="status">Offline payment unavailable for this bill.</p>;
   if (proofsLoading || proofsError)
     return (
       <p role="status">Offline payment unavailable while payment proof status is being checked.</p>
@@ -254,7 +254,7 @@ export function RecordOfflinePaymentV2Panel({
 
   if (!open) {
     return (
-      <section className="record-payment-panel" aria-label="Record V2 offline payment">
+      <section className="record-payment-panel" aria-label="Record offline payment">
         <button type="button" className="primary" onClick={() => setOpen(true)}>
           Record Offline Payment
         </button>
@@ -264,7 +264,7 @@ export function RecordOfflinePaymentV2Panel({
   }
 
   return (
-    <section className="record-payment-panel" aria-label="Record V2 offline payment">
+    <section className="record-payment-panel" aria-label="Record offline payment">
       <form className="record-payment-form" onSubmit={(event) => void submitNewAttempt(event)}>
         <h3>Record Offline Payment</h3>
         <dl>

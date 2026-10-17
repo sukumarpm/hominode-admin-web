@@ -128,7 +128,7 @@ describe('Admin Web Billing V2 financial-report action contract', () => {
         resolveAuthority: async () => resolvedAuthority(session),
         invokeCall: async () => response,
       }),
-    ).rejects.toThrow('The Billing V2 financial report response could not be validated.');
+    ).rejects.toThrow('The financial report could not be validated.');
   });
 
   it('rejects response billing period mismatch', async () => {
@@ -141,7 +141,7 @@ describe('Admin Web Billing V2 financial-report action contract', () => {
         resolveAuthority: async () => resolvedAuthority(session),
         invokeCall: async () => response,
       }),
-    ).rejects.toThrow('The Billing V2 financial report response could not be validated.');
+    ).rejects.toThrow('The financial report could not be validated.');
   });
 
   it('rejects wrong schemaVersion', async () => {
@@ -154,7 +154,7 @@ describe('Admin Web Billing V2 financial-report action contract', () => {
         resolveAuthority: async () => resolvedAuthority(session),
         invokeCall: async () => response,
       }),
-    ).rejects.toThrow('The Billing V2 financial report response could not be validated.');
+    ).rejects.toThrow('The financial report could not be validated.');
   });
 
   it('rejects negative money values', async () => {
@@ -167,7 +167,7 @@ describe('Admin Web Billing V2 financial-report action contract', () => {
         resolveAuthority: async () => resolvedAuthority(session),
         invokeCall: async () => response,
       }),
-    ).rejects.toThrow('The Billing V2 financial report response could not be validated.');
+    ).rejects.toThrow('The financial report could not be validated.');
   });
 
   it('rejects fractional money values', async () => {
@@ -180,7 +180,7 @@ describe('Admin Web Billing V2 financial-report action contract', () => {
         resolveAuthority: async () => resolvedAuthority(session),
         invokeCall: async () => response,
       }),
-    ).rejects.toThrow('The Billing V2 financial report response could not be validated.');
+    ).rejects.toThrow('The financial report could not be validated.');
   });
 
   it('rejects unsafe integer values', async () => {
@@ -193,7 +193,7 @@ describe('Admin Web Billing V2 financial-report action contract', () => {
         resolveAuthority: async () => resolvedAuthority(session),
         invokeCall: async () => response,
       }),
-    ).rejects.toThrow('The Billing V2 financial report response could not be validated.');
+    ).rejects.toThrow('The financial report could not be validated.');
   });
 
   it('rejects malformed status counts', async () => {
@@ -214,7 +214,7 @@ describe('Admin Web Billing V2 financial-report action contract', () => {
         resolveAuthority: async () => resolvedAuthority(session),
         invokeCall: async () => response,
       }),
-    ).rejects.toThrow('The Billing V2 financial report response could not be validated.');
+    ).rejects.toThrow('The financial report could not be validated.');
   });
 
   it('rejects malformed payment method summary', async () => {
@@ -229,7 +229,7 @@ describe('Admin Web Billing V2 financial-report action contract', () => {
         resolveAuthority: async () => resolvedAuthority(session),
         invokeCall: async () => response,
       }),
-    ).rejects.toThrow('The Billing V2 financial report response could not be validated.');
+    ).rejects.toThrow('The financial report could not be validated.');
   });
 
   it('rejects malformed creditPosition', async () => {
@@ -245,7 +245,7 @@ describe('Admin Web Billing V2 financial-report action contract', () => {
         resolveAuthority: async () => resolvedAuthority(session),
         invokeCall: async () => response,
       }),
-    ).rejects.toThrow('The Billing V2 financial report response could not be validated.');
+    ).rejects.toThrow('The financial report could not be validated.');
   });
 
   it('surfaces callable failures safely', async () => {
@@ -258,7 +258,7 @@ describe('Admin Web Billing V2 financial-report action contract', () => {
           throw Error('permission-denied');
         },
       }),
-    ).rejects.toThrow('Billing V2 financial report request failed.');
+    ).rejects.toThrow('Financial report request failed.');
   });
 
   it('keeps financial-ledger reconstruction out of actions', () => {

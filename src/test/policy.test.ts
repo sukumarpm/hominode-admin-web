@@ -8,7 +8,7 @@ import {
   validSlug,
 } from '../policy';
 import { adminData, residentData, community, makeSession, secondCommunity } from './fixtures';
-import { querySpec } from '../data';
+import { mergeAnnouncementRows, querySpec } from '../data';
 describe('canonical access policy', () => {
   it('accepts verified resident and active assigned admin', () => {
     expect(() => assertResident(makeSession().profile, community, 'green-valley')).not.toThrow();
@@ -141,7 +141,15 @@ describe('query boundaries', () => {
     ]);
   });
   it('uses callable discovery for resident notices', () =>
-    expect(querySpec(makeSession(), 'notices').notices).toBe(true));
+    expect(querySpec(makeSession(), 'notices').announcementFeed).toBe('resident'));
+  it('combines legacy and canonical community announcements while deduplicating exact overlap', () => {
+    const rows = mergeAnnouncementRows([
+      { id: 'legacy', data: { title: 'Water Notice', content: 'Work at 9', createdAt: new Date(10) } },
+      { id: 'canonical', data: { title: ' water   notice ', description: 'Work at 9', publishedAt: new Date(10) } },
+      { id: 'separate', data: { title: 'Water Notice', content: 'Work at 9', createdAt: new Date(86_400_011) } },
+    ]);
+    expect(rows.map((row) => row.id)).toEqual(['separate', 'legacy']);
+  });
   it('restricts inbox to canonical recipient role and app', () =>
     expect(querySpec(makeSession(), 'notifications').filters).toEqual(
       expect.arrayContaining([

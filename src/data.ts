@@ -39,6 +39,7 @@ export interface Spec {
   filters: Filter[];
   document?: string;
   notices?: boolean;
+  announcementFeed?: 'admin' | 'resident';
 }
 export function querySpec(s: Session, m: Module): Spec {
   if (s.role === 'superAdmin') {
@@ -83,11 +84,7 @@ export function querySpec(s: Session, m: Module): Spec {
   if (m === 'events') filters.push(['type', '==', 'event']);
 
   if (m === 'notices' && s.role === 'admin') {
-    filters.push(['type', '==', 'announcement']);
-    return {
-      collection: 'events_announcements',
-      filters,
-    };
+    return { collection: 'events_announcements', filters, announcementFeed: 'admin' };
   }
   if (s.role === 'resident') {
     if (['residents', 'parking', 'deliveries'].includes(m))
@@ -112,9 +109,35 @@ export function querySpec(s: Session, m: Module): Spec {
     if (m === 'documents')
       filters.push(['buildingId', '==', s.profile.buildingId], ['status', '==', 'published']);
     if (m === 'sos') filters.push(['residentUid', '==', s.uid]);
-    if (m === 'notices') return { collection: 'notices', filters, notices: true };
+    if (m === 'notices') return { collection: 'notices', filters, announcementFeed: 'resident' };
   }
   return { collection: names[m], filters };
+}
+
+/** Merge legacy Notice Board rows with canonical announcements without rewriting stored data. */
+export function mergeAnnouncementRows(rows: Row[]): Row[] {
+  const seen = new Set<string>();
+  return rows
+    .filter((row) => {
+      const data = row.data;
+      const title = str(data.title).toLocaleLowerCase().replace(/\s+/g, ' ');
+      const content = str(data.content ?? data.description)
+        .toLocaleLowerCase()
+        .replace(/\s+/g, ' ');
+      const time =
+        dateOf(data.publishedAt ?? data.publishDate ?? data.createdAt)
+          ?.toISOString()
+          .slice(0, 10) ?? '';
+      const signature = `${title}\u0000${content}\u0000${time}`;
+      if (!title || !content || seen.has(signature)) return false;
+      seen.add(signature);
+      return true;
+    })
+    .sort(
+      (a, b) =>
+        (dateOf(b.data.publishedAt ?? b.data.publishDate ?? b.data.createdAt)?.getTime() || 0) -
+        (dateOf(a.data.publishedAt ?? a.data.publishDate ?? a.data.createdAt)?.getTime() || 0),
+    );
 }
 export interface Resource {
   rows: Row[];
@@ -159,7 +182,184 @@ function subscribe(key: string, spec: Spec, notify: () => void) {
       emit({ rows: safe, loading: false, error: '' });
     };
     let stop = () => {};
-    if (spec.notices) {
+    const announcementError = (e: unknown) => {
+      if (!active || failed) return;
+      error(e);
+      stop();
+    };
+    if (spec.announcementFeed === 'admin') {
+      const communityId = JSON.parse(key)[2] as string;
+      const canonical = new Map<string, Row>();
+      const legacy = new Map<string, Row>();
+      const oldAnnouncements = new Map<string, Row>();
+      let canonicalReady = false;
+      let legacyReady = false;
+      const publish = () => {
+        if (failed || !canonicalReady || !legacyReady) return;
+        emit({
+          rows: mergeAnnouncementRows([
+            ...canonical.values(),
+            ...legacy.values(),
+            ...oldAnnouncements.values(),
+          ]),
+          loading: false,
+          error: '',
+        });
+      };
+      const stops = [
+        onSnapshot(
+          query(
+            collection(firebase().db, 'events_announcements'),
+            where('communityId', '==', communityId),
+            where('type', '==', 'announcement'),
+          ),
+          (snap) => {
+            canonical.clear();
+            snap.docs.forEach((d) =>
+              canonical.set(d.id, {
+                id: d.id,
+                data: { ...d.data(), _sourceCollection: 'events_announcements' },
+              }),
+            );
+            canonicalReady = true;
+            publish();
+          },
+          announcementError,
+        ),
+        onSnapshot(
+          query(collection(firebase().db, 'notices'), where('communityId', '==', communityId)),
+          (snap) => {
+            legacy.clear();
+            snap.docs.forEach((d) =>
+              legacy.set(d.id, { id: d.id, data: { ...d.data(), _sourceCollection: 'notices' } }),
+            );
+            legacyReady = true;
+            publish();
+          },
+          announcementError,
+        ),
+        onSnapshot(
+          query(
+            collection(firebase().db, 'announcements'),
+            where('communityId', '==', communityId),
+          ),
+          (snap) => {
+            oldAnnouncements.clear();
+            snap.docs.forEach((d) =>
+              oldAnnouncements.set(d.id, {
+                id: d.id,
+                data: { ...d.data(), _sourceCollection: 'announcements' },
+              }),
+            );
+            legacyReady = true;
+            publish();
+          },
+          announcementError,
+        ),
+      ];
+      stop = () => stops.splice(0).forEach((unsubscribe) => unsubscribe());
+    } else if (spec.announcementFeed === 'resident') {
+      const [, uid, communityId, flatId] = JSON.parse(key) as string[];
+      const canonical = new Map<string, Row>();
+      const oldAnnouncements = new Map<string, Row>();
+      const legacy = new Map<string, Row>();
+      let canonicalReady = false;
+      let oldReady = false;
+      let legacyReady = false;
+      const publish = () => {
+        if (failed || !canonicalReady || !oldReady || !legacyReady) return;
+        const active = [...canonical.values(), ...oldAnnouncements.values()].filter(
+          (row) => row.data.status === 'active' || row.data.status === 'published',
+        );
+        emit({
+          rows: mergeAnnouncementRows([...active, ...legacy.values()]),
+          loading: false,
+          error: '',
+        });
+      };
+      const stops: (() => void)[] = [];
+      stops.push(
+        onSnapshot(
+          query(
+            collection(firebase().db, 'events_announcements'),
+            where('communityId', '==', communityId),
+            where('type', '==', 'announcement'),
+          ),
+          (snap) => {
+            canonical.clear();
+            snap.docs.forEach((d) =>
+              canonical.set(d.id, {
+                id: d.id,
+                data: { ...d.data(), _sourceCollection: 'events_announcements' },
+              }),
+            );
+            canonicalReady = true;
+            publish();
+          },
+          announcementError,
+        ),
+      );
+      stops.push(
+        onSnapshot(
+          query(
+            collection(firebase().db, 'announcements'),
+            where('communityId', '==', communityId),
+          ),
+          (snap) => {
+            oldAnnouncements.clear();
+            snap.docs.forEach((d) =>
+              oldAnnouncements.set(d.id, {
+                id: d.id,
+                data: { ...d.data(), _sourceCollection: 'announcements' },
+              }),
+            );
+            oldReady = true;
+            publish();
+          },
+          announcementError,
+        ),
+      );
+      void call<{ communityId: string; flatId: string; noticeIds: string[] }>(
+        'getResidentNoticeIds',
+      )
+        .then((result) => {
+          if (!active || failed) return;
+          if (
+            result.communityId !== communityId ||
+            result.flatId !== flatId ||
+            !uid ||
+            !Array.isArray(result.noticeIds)
+          )
+            throw Error('Notice access could not be verified.');
+          const ids = [...new Set(result.noticeIds)];
+          if (!ids.length) {
+            legacyReady = true;
+            publish();
+            return;
+          }
+          const pending = new Set(ids);
+          ids.forEach((id) =>
+            stops.push(
+              onSnapshot(
+                doc(firebase().db, 'notices', id),
+                (snap) => {
+                  pending.delete(id);
+                  if (snap.exists())
+                    legacy.set(id, { id, data: { ...snap.data(), _sourceCollection: 'notices' } });
+                  else legacy.delete(id);
+                  if (!pending.size) {
+                    legacyReady = true;
+                    publish();
+                  }
+                },
+                announcementError,
+              ),
+            ),
+          );
+        })
+        .catch(() => announcementError(Error('Community announcements could not be verified.')));
+      stop = () => stops.splice(0).forEach((unsubscribe) => unsubscribe());
+    } else if (spec.notices) {
       let stops: (() => void)[] = [];
       void call<{ communityId: string; flatId: string; noticeIds: string[] }>(
         'getResidentNoticeIds',

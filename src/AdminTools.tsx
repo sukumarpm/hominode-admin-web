@@ -7,6 +7,7 @@ import { parseResidentCsv } from './csv';
 import { safeUrl, useRows } from './data';
 import { call } from './firebase';
 import { str, type Data, type Row, type Session } from './models';
+import { phoneCountries } from './utils/phone';
 interface ImportResult {
   rows: Data[];
   summary: { validRows?: number; errorRows?: number; successCount?: number; failedCount?: number };
@@ -42,6 +43,13 @@ export function AdminCreateButtons({ s, module }: { s: Session; module: string }
       )}
     </>
   );
+}
+
+function communityPhoneCountry(s: Session) {
+  const configured = str(
+    s.community?.data.phoneCountryCode || s.community?.data.countryCode,
+  ).toUpperCase();
+  return phoneCountries.find((country) => country.code === configured)?.code;
 }
 function CreateRecord({
   s,
@@ -193,7 +201,9 @@ function CreateRecord({
                   name="phoneNumber"
                   label="Phone number"
                   required
-                  defaultCountry="PH"
+                  defaultCountry={communityPhoneCountry(s) || 'PH'}
+                  respectDefaultCountry
+                  requireCountrySelection={!communityPhoneCountry(s)}
                 />
                 <label>
                   Resident type

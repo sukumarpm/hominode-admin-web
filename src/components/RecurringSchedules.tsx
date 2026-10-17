@@ -630,7 +630,7 @@ export function RecurringSchedulesPanel({
             </p>
             {pendingLifecycle.action === 'stop' && (
               <p role="alert">
-                Stop is final for the current backend lifecycle. Confirm before proceeding.
+                Stopping this schedule is permanent. Confirm before proceeding.
               </p>
             )}
             <label>
@@ -683,10 +683,10 @@ export function RecurringSchedulesPanel({
               <p>
                 <strong>Current revision ID</strong>: {revisionDraft.expectedRevisionId}
               </p>
-              <p>Submitting creates a new immutable revision. Existing revisions are never edited in place.</p>
+              <p>Submitting saves revised schedule terms. Previous terms remain in the schedule history.</p>
               <p>
-                The backend may apply revised terms from a later safe billing period if earlier periods are
-                already generated or reserved.
+                Revised terms may start in a later billing period if bills have already been generated or
+                scheduled.
               </p>
 
               <label>

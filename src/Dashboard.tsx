@@ -98,7 +98,7 @@ function QuickActions({ base, resident }: { base: string; resident: boolean }) {
         ['View Residents', 'residents', Users],
         ['View Visitors', 'visitors', UserRound],
         ['View Buildings', 'buildings', Building2],
-        ['Raise Notice', 'notices?create=1', Plus],
+        ['Publish Announcement', 'notices?create=1', Plus],
         ['Review Tickets', 'complaints', Wrench],
         ['View Reports', 'reports', ChartNoAxesCombined],
       ];

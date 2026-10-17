@@ -243,10 +243,10 @@ describe('Admin Web Billing V2 bill foundation', () => {
 
   it('fails closed in V2 display when currency or financial projection is invalid', () => {
     const { rerender } = render(<V2BillFinancialSummary data={validV2({ currency: 'USD' })} />);
-    expect(screen.getByText('V2 financial details unavailable')).toBeTruthy();
+    expect(screen.getByText('Financial details unavailable')).toBeTruthy();
     expect(screen.queryByText(/₹/)).toBeNull();
     rerender(<V2BillFinancialSummary data={validV2({ outstandingAmountMinor: 999 })} />);
-    expect(screen.getByText('V2 financial details unavailable')).toBeTruthy();
+    expect(screen.getByText('Financial details unavailable')).toBeTruthy();
     expect(screen.queryByText(/₹/)).toBeNull();
   });
 
@@ -310,10 +310,10 @@ describe('Admin Web Billing V2 bill foundation', () => {
 
   it('does not display malformed V2 rupees or V1 payment action', () => {
     renderBilling([row(validV2({ currency: 'USD' }))]);
-    expect(screen.getByText('V2 financial details unavailable')).toBeTruthy();
+    expect(screen.getByText('Financial details unavailable')).toBeTruthy();
     expect(screen.queryByText(/₹/)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /View September maintenance/ }));
-    expect(screen.getByText('Offline payment unavailable for this V2 bill.')).toBeTruthy();
+    expect(screen.getByText('Offline payment unavailable for this bill.')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Record Payment' })).toBeNull();
   });
 
@@ -453,7 +453,7 @@ describe('Admin Web Billing V2 bill foundation', () => {
       .closest('tr')!;
     expect(proofRow.cells[1].textContent).toBe('—');
     fireEvent.click(screen.getByRole('button', { name: 'View Malformed V2 proof' }));
-    expect(screen.getByText('V2 payment proof unavailable')).toBeInTheDocument();
+    expect(screen.getByText('Payment proof unavailable')).toBeInTheDocument();
     expect(screen.queryByText('₹125.00')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Verify payment' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Reject proof' })).not.toBeInTheDocument();
@@ -461,7 +461,7 @@ describe('Admin Web Billing V2 bill foundation', () => {
 
   it('routes valid V2 and V1 review actions only to their versioned callables', () => {
     const source = readFileSync('src/pages.tsx', 'utf8');
-    const verifyStart = source.indexOf('onVerify={() =>');
+    const verifyStart = source.indexOf('onVerify={(confirmedAmountMinor) =>');
     const rejectStart = source.indexOf('onReject={(rejectionReason) =>', verifyStart);
     const verify = source.slice(verifyStart, rejectStart);
     const rejectEnd = source.indexOf('\n            }', rejectStart);
@@ -469,7 +469,9 @@ describe('Admin Web Billing V2 bill foundation', () => {
 
     expect(verify).toContain('if (isV2PaymentProof(d))');
     expect(verify).toContain('if (!hasValidV2PaymentProof(d, row.id)) return;');
-    expect(verify).toContain("call('verifyPaymentProofV2', { paymentId: row.id })");
+    expect(verify).toContain("call('verifyPaymentProofV2'");
+    expect(verify).toContain('confirmedAmountMinor');
+    expect(verify).toContain('d.amountContractVersion === 2');
     expect(verify).toContain("call('verifyPaymentProof', { paymentId: row.id })");
     expect(verify).not.toContain('billId:');
     expect(
@@ -1721,13 +1723,13 @@ describe('Admin Web recurring revision action contract', () => {
 
   it('rejects unsupported create/display fields in revision request', () => {
     expect(() => reviseRecurringRequest({ schemaVersion: 2 })).toThrow(
-      'Recurring schedule revision request contains unsupported field: schemaVersion.',
+      'Recurring schedule revision request contains unsupported information.',
     );
     expect(() => reviseRecurringRequest({ currency: 'INR' })).toThrow(
-      'Recurring schedule revision request contains unsupported field: currency.',
+      'Recurring schedule revision request contains unsupported information.',
     );
     expect(() => reviseRecurringRequest({ frequency: 'monthly' })).toThrow(
-      'Recurring schedule revision request contains unsupported field: frequency.',
+      'Recurring schedule revision request contains unsupported information.',
     );
   });
 

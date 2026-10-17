@@ -16,6 +16,8 @@ interface PhoneNumberInputProps {
   required?: boolean;
   disabled?: boolean;
   defaultCountry?: CountryCode;
+  respectDefaultCountry?: boolean;
+  requireCountrySelection?: boolean;
 }
 
 const STORAGE_KEY = 'hominode.phoneCountry';
@@ -42,6 +44,8 @@ export function PhoneNumberInput({
   required = false,
   disabled = false,
   defaultCountry = 'PH',
+  respectDefaultCountry = false,
+  requireCountrySelection = false,
 }: PhoneNumberInputProps) {
   const id = useId();
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -50,13 +54,19 @@ export function PhoneNumberInput({
   const initial = value ? formatPhoneForEditing(value) : null;
 
   const [country, setCountry] = useState<CountryCode>(
-    initial?.country || savedCountry(defaultCountry),
+    initial?.country || (respectDefaultCountry ? defaultCountry : savedCountry(defaultCountry)),
   );
+  const [countrySelected, setCountrySelected] = useState(!requireCountrySelection);
   const [phoneText, setPhoneText] = useState(initial?.display || '');
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
 
-  const normalized = normalizePhone(phoneText, country);
+  function normalizeInput(text: string, countryCode: CountryCode, selected = countrySelected) {
+    if (requireCountrySelection && !selected && !text.trim().startsWith('+')) return null;
+    return normalizePhone(text, countryCode);
+  }
+
+  const normalized = normalizeInput(phoneText, country);
 
   const selected = useMemo(() => phoneCountries.find((item) => item.code === country)!, [country]);
 
@@ -86,7 +96,7 @@ export function PhoneNumberInput({
     return () => document.removeEventListener('mousedown', outside);
   }, [open]);
 
-  function setValidation(text: string, countryCode: CountryCode) {
+  function setValidation(text: string, countryCode: CountryCode, selected = countrySelected) {
     const element = inputRef.current;
 
     if (!element) return;
@@ -96,13 +106,17 @@ export function PhoneNumberInput({
       return;
     }
 
-    if (normalizePhone(text, countryCode)) {
+    if (normalizeInput(text, countryCode, selected)) {
       element.setCustomValidity('');
     } else {
       const countryName =
         phoneCountries.find((item) => item.code === countryCode)?.name || countryCode;
-
-      element.setCustomValidity(`Enter a valid phone number for ${countryName}.`);
+      const needsCountry = requireCountrySelection && !selected && !text.trim().startsWith('+');
+      element.setCustomValidity(
+        needsCountry
+          ? 'Select the phone country or enter an international number starting with +.'
+          : `Enter a valid phone number for ${countryName}.`,
+      );
     }
   }
 
@@ -127,7 +141,7 @@ export function PhoneNumberInput({
 
     setPhoneText(next);
 
-    const e164 = normalizePhone(next, nextCountry) || '';
+    const e164 = normalizeInput(next, nextCountry) || '';
     onChange?.(e164);
 
     setValidation(next, nextCountry);
@@ -135,6 +149,7 @@ export function PhoneNumberInput({
 
   function chooseCountry(nextCountry: CountryCode) {
     setCountry(nextCountry);
+    setCountrySelected(true);
     setOpen(false);
     setSearch('');
 
@@ -144,17 +159,24 @@ export function PhoneNumberInput({
       // Ignore storage failures.
     }
 
-    const e164 = normalizePhone(phoneText, nextCountry) || '';
+    const e164 = normalizeInput(phoneText, nextCountry, true) || '';
     onChange?.(e164);
-    setValidation(phoneText, nextCountry);
+    setValidation(phoneText, nextCountry, true);
   }
 
   function formatOnBlur() {
     setValidation(phoneText, country);
 
-    const e164 = normalizePhone(phoneText, country);
+    const e164 = normalizeInput(phoneText, country);
 
     if (!e164) return;
+
+    // Keep an explicitly international value visibly international while editing.
+    // The hidden form value remains the canonical E.164 value in either case.
+    if (phoneText.trim().startsWith('+')) {
+      onChange?.(e164);
+      return;
+    }
 
     const formatted = formatPhoneForEditing(e164);
 

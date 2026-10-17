@@ -386,7 +386,8 @@ export function FacilityForm({
 
         for (const slot of slots) {
           if (slot.raw !== undefined) {
-            if (!slot.raw.trim()) throw Error('Enter a value for every legacy slot, or remove it.');
+            if (!slot.raw.trim())
+              throw Error('Enter a value for every existing slot, or remove it.');
             continue;
           }
 
@@ -728,8 +729,7 @@ export function FacilityForm({
                         <div>
                           <strong>Existing primary image</strong>
                           <small>
-                            This is a legacy image URL. Upload new photos to create a managed
-                            gallery.
+                            This photo uses an image link. Upload photos to create a gallery.
                           </small>
                         </div>
                         <button
@@ -871,7 +871,7 @@ export function FacilityForm({
                             <span className="facility-slot-number">{index + 1}</span>
                             {slot.raw !== undefined ? (
                               <label className="facility-legacy-slot">
-                                <span>Legacy slot</span>
+                                <span>Existing slot</span>
                                 <input
                                   value={slot.raw}
                                   onChange={(e) =>

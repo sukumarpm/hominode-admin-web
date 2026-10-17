@@ -845,13 +845,13 @@ export function normalizeRecurringBillingScheduleRequest(
   }
 
   const value = input as Record<string, unknown>;
-  if (value.schemaVersion !== 2) throw Error('Recurring schedule schemaVersion must be 2.');
+  if (value.schemaVersion !== 2) throw Error('This recurring schedule format is not supported.');
   if (value.currency !== 'INR') throw Error('Recurring schedule currency must be INR.');
   if (value.frequency !== 'monthly') throw Error('Recurring schedule frequency must be monthly.');
 
   const communityId = recurringDocId(value.communityId, 'Community');
   if (!isRecurringScheduleIdempotencyKeyV2(value.idempotencyKey)) {
-    throw Error('Recurring schedule idempotency key is invalid.');
+    throw Error('Recurring schedule request could not be identified. Please try again.');
   }
   const idempotencyKey = value.idempotencyKey;
 
@@ -933,7 +933,7 @@ export function normalizeReviseRecurringBillingScheduleV2Request(
     'generationInProgressBillingPeriod',
   ]) {
     if (Object.hasOwn(value, key)) {
-      throw Error(`Recurring schedule revision request contains unsupported field: ${key}.`);
+      throw Error(`Recurring schedule revision request contains unsupported information.`);
     }
   }
 
@@ -941,7 +941,7 @@ export function normalizeReviseRecurringBillingScheduleV2Request(
   const scheduleId = recurringDocId(value.scheduleId, 'Schedule');
   const expectedRevisionId = recurringDocId(value.expectedRevisionId, 'Expected revision ID');
   if (!isRecurringScheduleIdempotencyKeyV2(value.idempotencyKey)) {
-    throw Error('Recurring schedule revision idempotency key is invalid.');
+    throw Error('Recurring schedule revision request could not be identified. Please try again.');
   }
   const idempotencyKey = value.idempotencyKey;
 
@@ -1471,12 +1471,12 @@ export async function getBillingV2FinancialReport(
   try {
     response = await invokeCall('getBillingV2FinancialReport', payload);
   } catch {
-    throw Error('Billing V2 financial report request failed.');
+    throw Error('Financial report request failed.');
   }
 
   const report = parseBillingV2FinancialReport(response, payload.communityId, payload.billingPeriod);
   if (!report) {
-    throw Error('The Billing V2 financial report response could not be validated.');
+    throw Error('The financial report could not be validated.');
   }
   return report;
 }
@@ -1917,42 +1917,17 @@ export async function createComplaint(session: Session, values: Record<string, s
 export async function createVisitor(session: Session, v: Record<string, string>) {
   const s = await currentAuthority(session);
   if (s.role !== 'resident') throw Error('A resident account is required.');
-  const p = s.profile;
   const arrival = new Date(v.expectedArrival);
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   if (!Number.isFinite(arrival.getTime()) || arrival < today)
     throw Error('Choose a valid arrival date from today onwards.');
-  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  const bytes = crypto.getRandomValues(new Uint8Array(8));
-  const pass = Array.from(bytes, (x) => alphabet[x % 32]).join('');
-  const token = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(24))))
-    .replaceAll('+', '-')
-    .replaceAll('/', '_')
-    .replaceAll('=', '');
-  return addDoc(collection(firebase().db, 'visitors'), {
-    hostUserId: s.uid,
-    hostName: p.name,
-    hostEmail: str(p.data.email),
-    flatId: p.flatId,
-    flatLabel: p.flatLabel,
-    adminId: p.data.adminId ?? null,
-    communityId: s.community.id,
+  return call<{ visitorId: string }>('createVisitorInvitation', {
     visitorName: required(v.visitorName, 'Visitor name'),
     purpose: required(v.purpose, 'Purpose'),
-    expectedArrival: Timestamp.fromDate(arrival),
+    expectedArrival: arrival.getTime(),
     phoneNumber: v.phoneNumber?.trim() || null,
     vehicleNumber: v.vehicleNumber?.trim() || null,
-    visitorPassCode: pass.slice(0, 4) + '-' + pass.slice(4),
-    qrToken: token,
-    status: 'expected',
-    isApproved: false,
-    approvedBy: null,
-    approvedAt: null,
-    actualArrival: null,
-    departure: null,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
   });
 }
 export async function updateScoped(
@@ -2084,6 +2059,7 @@ export async function updateAnnouncement(
     priority?: string;
     status?: string;
   },
+  sourceCollection: 'events_announcements' | 'notices' | 'announcements' = 'events_announcements',
 ) {
   const s = await currentAuthority(session);
 
@@ -2091,7 +2067,7 @@ export async function updateAnnouncement(
     throw Error('An administrator is required.');
   }
 
-  const record = doc(firebase().db, 'events_announcements', announcementId);
+  const record = doc(firebase().db, sourceCollection, announcementId);
   const snapshot = await getDocFromServer(record);
 
   if (!snapshot.exists()) throw Error('Announcement not found.');
@@ -2100,7 +2076,7 @@ export async function updateAnnouncement(
 
   if (
     existing.communityId !== s.community.id ||
-    existing.type !== 'announcement'
+    (sourceCollection === 'events_announcements' && existing.type !== 'announcement')
   ) {
     throw Error('Announcement is outside this community.');
   }
@@ -2110,7 +2086,15 @@ export async function updateAnnouncement(
 
   const description = required(values.description, 'Announcement');
 
-  await updateDoc(record, {
+  await updateDoc(record, sourceCollection !== 'events_announcements' ? {
+    title: required(values.title, 'Title'),
+    content: description,
+    category: values.category?.trim() || 'General',
+    priority: allowedPriorities.includes(values.priority || '') ? values.priority : 'medium',
+    status: values.status === 'inactive' ? 'archived' : 'published',
+    isActive: values.status !== 'inactive',
+    updatedAt: serverTimestamp(),
+  } : {
     title: required(values.title, 'Title'),
     description,
     content: description,

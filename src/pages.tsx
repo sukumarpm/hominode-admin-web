@@ -40,9 +40,11 @@ import { CommunityPaymentSettings } from './CommunityPaymentSettings';
 import { Card, Modal, Pill, State } from './components';
 import { CreateRecurringScheduleModal } from './components/CreateRecurringScheduleModal';
 import {
+  isConfirmedV2SettlementResponse,
   paymentAttributionLabel,
   paymentMethodLabel,
   paymentReference,
+  paymentVerificationErrorMessage,
   PaymentReviewSection,
 } from './components/PaymentReview';
 import { PhoneNumberInput } from './components/PhoneNumberInput';
@@ -80,6 +82,7 @@ import {
 import { useAuth } from './session';
 import { canUseFeature } from './subscription';
 import { useSubscription } from './subscriptionContext';
+import { adminVisitorApprovalPatch, adminVisitorRejectionPatch } from './visitorTransitions';
 export const labels: Record<Module, string> = {
   residents: 'Residents',
   buildings: 'Buildings',
@@ -90,7 +93,7 @@ export const labels: Record<Module, string> = {
   bookings: 'Bookings',
   billing: 'Bills & Payments',
   payments: 'Payments',
-  notices: 'Notices',
+  notices: 'Announcements',
   events: 'Events',
   documents: 'Documents',
   community: 'Community Wall',
@@ -202,7 +205,7 @@ export function V2BillFinancialSummary({
   compact?: boolean;
 }) {
   if (!hasValidV2BillFinancials(data)) {
-    return <span role="status">V2 financial details unavailable</span>;
+    return <span role="status">Financial details unavailable</span>;
   }
 
   const rawLines = Array.isArray(data.chargeLines) ? data.chargeLines : [];
@@ -211,7 +214,12 @@ export function V2BillFinancialSummary({
     const item = line as Record<string, unknown>;
     const label = first(item, ['label', 'description', 'name', 'title']);
     const lineAmount = item.amountMinor;
-    if (!label || typeof lineAmount !== 'number' || !Number.isSafeInteger(lineAmount) || lineAmount < 0) {
+    if (
+      !label ||
+      typeof lineAmount !== 'number' ||
+      !Number.isSafeInteger(lineAmount) ||
+      lineAmount < 0
+    ) {
       return [];
     }
     return [{ key: `${label}-${index}`, label, amountMinor: lineAmount }];
@@ -222,10 +230,22 @@ export function V2BillFinancialSummary({
     <div className={compact ? 'v2-bill-summary v2-bill-summary-compact' : 'v2-bill-summary'}>
       {billingPeriod && <p className="v2-bill-period">Billing period: {billingPeriod}</p>}
       <dl className="v2-bill-balances">
-        <div><dt>Total</dt><dd>{formatInrMinorUnits(data.amountMinor)}</dd></div>
-        <div><dt>Paid</dt><dd>{formatInrMinorUnits(data.paidAmountMinor)}</dd></div>
-        <div><dt>Credit applied</dt><dd>{formatInrMinorUnits(data.creditAppliedMinor)}</dd></div>
-        <div><dt>Outstanding</dt><dd>{formatInrMinorUnits(data.outstandingAmountMinor)}</dd></div>
+        <div>
+          <dt>Total</dt>
+          <dd>{formatInrMinorUnits(data.amountMinor)}</dd>
+        </div>
+        <div>
+          <dt>Paid</dt>
+          <dd>{formatInrMinorUnits(data.paidAmountMinor)}</dd>
+        </div>
+        <div>
+          <dt>Credit applied</dt>
+          <dd>{formatInrMinorUnits(data.creditAppliedMinor)}</dd>
+        </div>
+        <div>
+          <dt>Outstanding</dt>
+          <dd>{formatInrMinorUnits(data.outstandingAmountMinor)}</dd>
+        </div>
       </dl>
       {chargeLines.length > 0 && (
         <div className="v2-bill-charge-lines">
@@ -330,7 +350,6 @@ function FacilityGallery({ data, title }: { data: Data; title: string }) {
   );
 }
 
-
 function EventDetailView({ data, title }: { data: Data; title: string }) {
   const eventDate = data.eventDate ?? data.date;
   const category = str(data.category) || 'Community event';
@@ -384,9 +403,7 @@ function EventDetailView({ data, title }: { data: Data; title: string }) {
 
         {location && (
           <div>
-            <span className="event-detail-meta-icon event-location-mark">
-              ⌖
-            </span>
+            <span className="event-detail-meta-icon event-location-mark">⌖</span>
             <span>
               <small>Location</small>
               <strong>{location}</strong>
@@ -500,10 +517,7 @@ function ScopedModule({
     console.log('planName:', entitlement?.planName);
     console.log('features:', entitlement?.features);
     console.log('events feature:', entitlement?.features?.events);
-    console.log(
-      'canUseFeature(events):',
-      canUseFeature(entitlement, 'events')
-    );
+    console.log('canUseFeature(events):', canUseFeature(entitlement, 'events'));
     console.groupEnd();
   }
   const bookingAllowed = canUseFeature(entitlement, 'facilityBooking');
@@ -630,7 +644,7 @@ function ScopedModule({
               {module === 'visitors'
                 ? 'Invite Visitor'
                 : module === 'notices'
-                  ? 'Publish Notice'
+                ? 'Publish Announcement'
                   : module === 'billing'
                     ? 'Create Bill'
                     : module === 'facilities'
@@ -689,7 +703,13 @@ function ScopedModule({
       ) : (
         <div className="module-summary">
           <span>
-            <strong>{displayResource.loading ? '…' : displayResource.error ? '—' : displayResource.rows.length}</strong>{' '}
+            <strong>
+              {displayResource.loading
+                ? '…'
+                : displayResource.error
+                  ? '—'
+                  : displayResource.rows.length}
+            </strong>{' '}
             Total {title.toLowerCase()}
           </span>
           <span>
@@ -961,22 +981,12 @@ function ScopedModule({
 
                       <h3>{titleOf(row.data)}</h3>
 
-                      <p>
-                        {first(
-                          row.data,
-                          ['description'],
-                          'Community event',
-                        )}
-                      </p>
+                      <p>{first(row.data, ['description'], 'Community event')}</p>
 
                       <div className="event-card-meta">
                         <span>
                           <CalendarDays size={14} />
-                          {dateLabel(
-                            row.data.eventDate ??
-                            row.data.date ??
-                            row.data.createdAt,
-                          )}
+                          {dateLabel(row.data.eventDate ?? row.data.date ?? row.data.createdAt)}
                         </span>
 
                         {str(row.data.location) && (
@@ -1092,22 +1102,28 @@ function ScopedModule({
                       </th>
                       <td>
                         {module === 'payments' && isV2PaymentProof(row.data) ? (
-                          hasValidV2PaymentProof(row.data, row.id)
-                            ? formatInrMinorUnits(row.data.submittedAmountMinor)
-                            : '—'
+                          hasValidV2PaymentProof(row.data, row.id) ? (
+                            formatInrMinorUnits(row.data.submittedAmountMinor)
+                          ) : (
+                            '—'
+                          )
                         ) : module === 'billing' && isV2Bill(row.data) ? (
                           <V2BillFinancialSummary data={row.data} compact />
-                        ) : ['billing', 'payments'].includes(module)
-                          ? money(amount(row.data))
-                          : first(
+                        ) : ['billing', 'payments'].includes(module) ? (
+                          money(amount(row.data))
+                        ) : (
+                          first(
                             row.data,
                             ['flatLabel', 'description', 'purpose', 'role', 'category'],
                             '—',
+                          )
                           )}
                       </td>
                       {module === 'payments' && (
                         <td>
-                          <span>{paymentMethodLabel(row.data.method ?? row.data.paymentMethod)}</span>
+                          <span>
+                            {paymentMethodLabel(row.data.method ?? row.data.paymentMethod)}
+                          </span>
                           {str(row.data.status).toLowerCase() === 'completed' &&
                             paymentAttributionLabel(row.data.method ?? row.data.paymentMethod) && (
                               <small>
@@ -1118,7 +1134,8 @@ function ScopedModule({
                       )}
                       {module === 'billing' && (
                         <td>
-                          {str(row.data.status).toLowerCase() === 'paid' && str(row.data.paymentMethod)
+                          {str(row.data.status).toLowerCase() === 'paid' &&
+                          str(row.data.paymentMethod)
                             ? paymentMethodWithAttribution(row.data.paymentMethod)
                             : '—'}
                         </td>
@@ -1162,7 +1179,9 @@ function ScopedModule({
             </div>
           )}
           {module === 'payments' && s.role === 'admin' && v2ProofResource.error && (
-            <p role="status">V2 payment proofs could not be loaded. Legacy payments remain available.</p>
+            <p role="status">
+              Some payment proofs could not be loaded. Other payments remain available.
+            </p>
           )}
         </State>
         {rows.length > 12 && (
@@ -1273,7 +1292,7 @@ function CreateForm({ s, module, onClose }: { s: Session; module: Module; onClos
         module === 'visitors'
           ? 'Invite a Visitor'
           : module === 'notices'
-            ? 'Publish a Notice'
+          ? 'Publish an Announcement'
             : module === 'events'
               ? 'Create Event'
               : 'Raise a Request'
@@ -1364,12 +1383,7 @@ function CreateForm({ s, module, onClose }: { s: Session; module: Module; onClos
 
                   <label>
                     Location
-                    <input
-                      name="location"
-                      placeholder="Community Hall"
-                      maxLength={200}
-                      required
-                    />
+                    <input name="location" placeholder="Community Hall" maxLength={200} required />
                   </label>
 
                   <label>
@@ -1437,18 +1451,12 @@ function CreateForm({ s, module, onClose }: { s: Session; module: Module; onClos
 
                       <span className="event-image-picker-copy">
                         <strong>
-                          {eventImageFiles.length
-                            ? 'Choose different photos'
-                            : 'Add event photos'}
+                          {eventImageFiles.length ? 'Choose different photos' : 'Add event photos'}
                         </strong>
-                        <small>
-                          Select JPG, PNG or WebP images
-                        </small>
+                        <small>Select JPG, PNG or WebP images</small>
                       </span>
 
-                      <span className="event-image-picker-action">
-                        Browse
-                      </span>
+                      <span className="event-image-picker-action">Browse</span>
                     </label>
 
                     {eventImageFiles.length > 0 && (
@@ -1463,11 +1471,7 @@ function CreateForm({ s, module, onClose }: { s: Session; module: Module; onClos
                               alt={`Event preview ${index + 1}`}
                             />
 
-                            {index === 0 && (
-                              <span className="event-cover-badge">
-                                Cover
-                              </span>
-                            )}
+                            {index === 0 && <span className="event-cover-badge">Cover</span>}
 
                             <button
                               type="button"
@@ -1481,9 +1485,7 @@ function CreateForm({ s, module, onClose }: { s: Session; module: Module; onClos
                               ×
                             </button>
 
-                            <small title={file.name}>
-                              {file.name}
-                            </small>
+                            <small title={file.name}>{file.name}</small>
                           </div>
                         ))}
                       </div>
@@ -1578,7 +1580,9 @@ function ContentEditForm({
     Array.isArray(d.images)
       ? d.images
         .filter(
-          (image): image is {
+            (
+              image,
+            ): image is {
             url: string;
             storagePath: string;
             name: string;
@@ -1609,9 +1613,7 @@ function ContentEditForm({
     setBusy(true);
     setError('');
 
-    const values = Object.fromEntries(
-      new FormData(e.currentTarget),
-    ) as Record<string, string>;
+    const values = Object.fromEntries(new FormData(e.currentTarget)) as Record<string, string>;
 
     try {
       if (module === 'events') {
@@ -1622,9 +1624,7 @@ function ContentEditForm({
           eventDate: values.eventDate,
           time: values.time,
           location: values.location,
-          totalCapacity: values.totalCapacity
-            ? Number(values.totalCapacity)
-            : undefined,
+          totalCapacity: values.totalCapacity ? Number(values.totalCapacity) : undefined,
           status: values.status,
         });
 
@@ -1638,7 +1638,11 @@ function ContentEditForm({
           category: values.category,
           priority: values.priority,
           status: values.status,
-        });
+        }, str(row.data._sourceCollection) === 'notices'
+          ? 'notices'
+          : str(row.data._sourceCollection) === 'announcements'
+            ? 'announcements'
+            : 'events_announcements');
       }
 
       onSaved();
@@ -1650,29 +1654,17 @@ function ContentEditForm({
   }
 
   return (
-    <Modal
-      title={module === 'events' ? 'Edit Event' : 'Edit Announcement'}
-      onClose={onClose}
-    >
+    <Modal title={module === 'events' ? 'Edit Event' : 'Edit Announcement'} onClose={onClose}>
       <form onSubmit={submit}>
         <fieldset disabled={busy}>
           <label>
             Title
-            <input
-              name="title"
-              required
-              maxLength={160}
-              defaultValue={str(d.title)}
-            />
+            <input name="title" required maxLength={160} defaultValue={str(d.title)} />
           </label>
 
           <label>
             Category
-            <input
-              name="category"
-              maxLength={100}
-              defaultValue={str(d.category)}
-            />
+            <input name="category" maxLength={100} defaultValue={str(d.category)} />
           </label>
 
           {module === 'events' ? (
@@ -1683,29 +1675,18 @@ function ContentEditForm({
                   type="date"
                   name="eventDate"
                   required
-                  defaultValue={contentDateInputValue(
-                    d.eventDate ?? d.date,
-                  )}
+                  defaultValue={contentDateInputValue(d.eventDate ?? d.date)}
                 />
               </label>
 
               <label>
                 Time
-                <input
-                  type="time"
-                  name="time"
-                  defaultValue={str(d.time)}
-                />
+                <input type="time" name="time" defaultValue={str(d.time)} />
               </label>
 
               <label>
                 Location
-                <input
-                  name="location"
-                  required
-                  maxLength={200}
-                  defaultValue={str(d.location)}
-                />
+                <input name="location" required maxLength={200} defaultValue={str(d.location)} />
               </label>
 
               <label>
@@ -1715,20 +1696,13 @@ function ContentEditForm({
                   name="totalCapacity"
                   min="1"
                   step="1"
-                  defaultValue={
-                    typeof d.totalCapacity === 'number'
-                      ? d.totalCapacity
-                      : ''
-                  }
+                  defaultValue={typeof d.totalCapacity === 'number' ? d.totalCapacity : ''}
                 />
               </label>
 
               <label>
                 Status
-                <select
-                  name="status"
-                  defaultValue={str(d.status) || 'upcoming'}
-                >
+                <select name="status" defaultValue={str(d.status) || 'upcoming'}>
                   <option value="upcoming">Upcoming</option>
                   <option value="active">Active</option>
                   <option value="completed">Completed</option>
@@ -1754,53 +1728,32 @@ function ContentEditForm({
 
                   <div className="event-image-previews">
                     {existingEventImages.map((image, index) => (
-                      <div
-                        className="event-image-preview"
-                        key={image.storagePath}
-                      >
-                        <img
-                          src={image.url}
-                          alt={`Existing event photo ${index + 1}`}
-                        />
+                      <div className="event-image-preview" key={image.storagePath}>
+                        <img src={image.url} alt={`Existing event photo ${index + 1}`} />
 
-                        {index === 0 && (
-                          <span className="event-cover-badge">
-                            Cover
-                          </span>
-                        )}
+                        {index === 0 && <span className="event-cover-badge">Cover</span>}
 
                         <button
                           type="button"
                           aria-label={`Remove existing photo ${index + 1}`}
                           disabled={busy}
                           onClick={() => {
-                            const confirmed = window.confirm(
-                              'Remove this event photo?',
-                            );
+                            const confirmed = window.confirm('Remove this event photo?');
 
                             if (!confirmed) return;
 
                             setBusy(true);
                             setError('');
 
-                            void removeEventImage(
-                              s,
-                              row.id,
-                              image.storagePath,
-                            )
+                            void removeEventImage(s, row.id, image.storagePath)
                               .then(() => {
                                 setExistingEventImages((current) =>
-                                  current.filter(
-                                    (item) =>
-                                      item.storagePath !== image.storagePath,
-                                  ),
+                                  current.filter((item) => item.storagePath !== image.storagePath),
                                 );
                               })
                               .catch((e: unknown) => {
                                 setError(
-                                  e instanceof Error
-                                    ? e.message
-                                    : 'Unable to remove image.',
+                                  e instanceof Error ? e.message : 'Unable to remove image.',
                                 );
                               })
                               .finally(() => {
@@ -1811,11 +1764,7 @@ function ContentEditForm({
                           ×
                         </button>
 
-                        {image.name && (
-                          <small title={image.name}>
-                            {image.name}
-                          </small>
-                        )}
+                        {image.name && <small title={image.name}>{image.name}</small>}
                       </div>
                     ))}
                   </div>
@@ -1826,9 +1775,7 @@ function ContentEditForm({
                 <div className="event-image-heading">
                   <div>
                     <strong>Add more photos</strong>
-                    <span>
-                      JPG, PNG or WebP · Maximum 6 photos total
-                    </span>
+                    <span>JPG, PNG or WebP · Maximum 6 photos total</span>
                   </div>
 
                   <span className="event-image-counter">
@@ -1860,12 +1807,12 @@ function ContentEditForm({
                           }
                         }
 
-                        const available =
-                          Math.max(0, 6 - existingEventImages.length);
+                        const available = Math.max(0, 6 - existingEventImages.length);
 
                         if (merged.length > available) {
                           setError(
-                            `You can add only ${available} more photo${available === 1 ? '' : 's'
+                            `You can add only ${available} more photo${
+                              available === 1 ? '' : 's'
                             }. Maximum is 6 total.`,
                           );
 
@@ -1887,9 +1834,7 @@ function ContentEditForm({
                     <small>JPG, PNG or WebP · 5 MB each</small>
                   </span>
 
-                  <span className="event-image-picker-action">
-                    Browse
-                  </span>
+                  <span className="event-image-picker-action">Browse</span>
                 </label>
 
                 {!!previews.length && (
@@ -1899,26 +1844,19 @@ function ContentEditForm({
                         className="event-image-preview"
                         key={`${file.name}-${file.lastModified}`}
                       >
-                        <img
-                          src={previews[index]}
-                          alt={`New event photo ${index + 1}`}
-                        />
+                        <img src={previews[index]} alt={`New event photo ${index + 1}`} />
 
                         <button
                           type="button"
                           aria-label={`Remove ${file.name}`}
                           onClick={() =>
-                            setNewImages((current) =>
-                              current.filter((_, i) => i !== index),
-                            )
+                            setNewImages((current) => current.filter((_, i) => i !== index))
                           }
                         >
                           ×
                         </button>
 
-                        <small title={file.name}>
-                          {file.name}
-                        </small>
+                        <small title={file.name}>{file.name}</small>
                       </div>
                     ))}
                   </div>
@@ -1929,10 +1867,7 @@ function ContentEditForm({
             <>
               <label>
                 Priority
-                <select
-                  name="priority"
-                  defaultValue={str(d.priority) || 'medium'}
-                >
+                <select name="priority" defaultValue={str(d.priority) || 'medium'}>
                   <option value="low">Low</option>
                   <option value="medium">Medium</option>
                   <option value="high">High</option>
@@ -1941,10 +1876,7 @@ function ContentEditForm({
 
               <label>
                 Status
-                <select
-                  name="status"
-                  defaultValue={str(d.status) || 'active'}
-                >
+                <select name="status" defaultValue={str(d.status) || 'active'}>
                   <option value="active">Active</option>
                   <option value="inactive">Inactive</option>
                 </select>
@@ -1959,10 +1891,7 @@ function ContentEditForm({
               rows={5}
               required
               maxLength={5000}
-              defaultValue={
-                str(d.description) ||
-                str(d.content)
-              }
+              defaultValue={str(d.description) || str(d.content)}
             />
           </label>
 
@@ -2006,9 +1935,7 @@ function RecordDetails({
   v2ProofResource: Resource;
   startEditing?: boolean;
 }) {
-  const [editingFacility, setEditingFacility] = useState(
-    module === 'facilities' && startEditing,
-  );
+  const [editingFacility, setEditingFacility] = useState(module === 'facilities' && startEditing);
   const [editingContent, setEditingContent] = useState(
     (module === 'events' || module === 'notices') && startEditing,
   );
@@ -2040,11 +1967,7 @@ function RecordDetails({
     d.isApproved !== true &&
     d.actualArrival == null &&
     d.departure == null;
-  if (
-    (module === 'events' || module === 'notices') &&
-    s.role === 'admin' &&
-    editingContent
-  )
+  if ((module === 'events' || module === 'notices') && s.role === 'admin' && editingContent)
     return (
       <ContentEditForm
         s={s}
@@ -2086,12 +2009,23 @@ function RecordDetails({
                 setReceipt(URL.createObjectURL(blob));
               })
             }
-            onVerify={() =>
-              void perform(async () => {
+            onVerify={(confirmedAmountMinor) =>
+              perform(async () => {
                 if (isV2PaymentProof(d)) {
                   if (!hasValidV2PaymentProof(d, row.id)) return;
                   await currentAuthority(s);
-                  return call('verifyPaymentProofV2', { paymentId: row.id });
+                  try {
+                    const result = await call('verifyPaymentProofV2', {
+                      paymentId: row.id,
+                      ...(d.amountContractVersion === 2 ? { confirmedAmountMinor } : {}),
+                    });
+                    if (!isConfirmedV2SettlementResponse(result)) {
+                      throw new Error('The payment settlement response could not be confirmed.');
+                    }
+                    return result;
+                  } catch (error) {
+                    throw new Error(paymentVerificationErrorMessage(error));
+                  }
                 }
                 await currentAuthority(s);
                 return call('verifyPaymentProof', { paymentId: row.id });
@@ -2118,9 +2052,7 @@ function RecordDetails({
         </>
       ) : (
         <>
-          {module === 'facilities' && (
-            <FacilityGallery data={d} title={titleOf(d)} />
-          )}
+          {module === 'facilities' && <FacilityGallery data={d} title={titleOf(d)} />}
           <Pill value={moduleStatus(module, d)} />
           <DetailFields
             data={
@@ -2272,17 +2204,10 @@ function RecordDetails({
       {module === 'residents' && s.role === 'admin' && <ResidentReview s={s} row={row} />}
       <div className="detail-actions">
         <fieldset disabled={busy}>
-          {(module === 'events' || module === 'notices') &&
-            s.role === 'admin' && (
-              <button
-                type="button"
-                className="primary"
-                onClick={() => setEditingContent(true)}
-              >
+          {(module === 'events' || module === 'notices') && s.role === 'admin' && (
+            <button type="button" className="primary" onClick={() => setEditingContent(true)}>
                 <Pencil size={16} />
-                {module === 'events'
-                  ? 'Edit Event'
-                  : 'Edit Announcement'}
+              {module === 'events' ? 'Edit Event' : 'Edit Announcement'}
               </button>
             )}
           {module === 'notifications' && d.isRead !== true && (
@@ -2319,8 +2244,7 @@ function RecordDetails({
                 onClick={() =>
                   void perform(() =>
                     updateScoped(s, 'visitors', row.id, {
-                      isApproved: true,
-                      approvedAt: serverTimestamp(),
+                      ...adminVisitorApprovalPatch(s.uid, serverTimestamp()),
                     }),
                   )
                 }
@@ -2331,10 +2255,7 @@ function RecordDetails({
                 onClick={() =>
                   void perform(() =>
                     updateScoped(s, 'visitors', row.id, {
-                      status: 'rejected',
-                      isApproved: false,
-                      rejectedBy: s.uid,
-                      rejectedAt: serverTimestamp(),
+                      ...adminVisitorRejectionPatch(s.uid, serverTimestamp()),
                     }),
                   )
                 }
@@ -2472,9 +2393,7 @@ export function ProfilePage({
           )}
         </Card>
       </div>
-      {settings && s.role === 'admin' && s.community && (
-        <CommunityPaymentSettings session={s} />
-      )}
+      {settings && s.role === 'admin' && s.community && <CommunityPaymentSettings session={s} />}
     </>
   );
 }
@@ -2639,7 +2558,7 @@ function ReportData({ s }: { s: Session }) {
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
     const a = document.createElement('a');
     a.href = url;
-    a.download = `billing-v2-financial-report-${report.billingPeriod}.csv`;
+    a.download = `billing-financial-report-${report.billingPeriod}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -2900,9 +2819,7 @@ function FinancialReportDashboard({ report }: { report: BillingV2FinancialReport
                     className={`financial-report-status-fill status-${label.toLowerCase().replace(' ', '-')}`}
                     style={{
                       width:
-                        largestStatusCount === 0
-                          ? '0%'
-                          : `${(count / largestStatusCount) * 100}%`,
+                        largestStatusCount === 0 ? '0%' : `${(count / largestStatusCount) * 100}%`,
                     }}
                   />
                 </div>
@@ -2911,7 +2828,10 @@ function FinancialReportDashboard({ report }: { report: BillingV2FinancialReport
           </div>
         </section>
 
-        <section className="financial-report-card" aria-labelledby="financial-payment-methods-title">
+        <section
+          className="financial-report-card"
+          aria-labelledby="financial-payment-methods-title"
+        >
           <header className="financial-report-card-header">
             <div>
               <p className="eyebrow">Collections</p>
@@ -2950,7 +2870,10 @@ function FinancialReportDashboard({ report }: { report: BillingV2FinancialReport
         </section>
       </div>
 
-      <section className="financial-report-card financial-summary-card" aria-labelledby="financial-summary-title">
+      <section
+        className="financial-report-card financial-summary-card"
+        aria-labelledby="financial-summary-title"
+      >
         <header className="financial-report-card-header">
           <div>
             <p className="eyebrow">At a glance</p>

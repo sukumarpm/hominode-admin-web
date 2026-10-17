@@ -590,29 +590,24 @@ it('creates complaints with canonical ownership and pending status', async () =>
     }),
   );
 });
-it('creates expected visitor passes without granting entry', async () => {
+it('creates visitor invitations through the protected callable without client credentials', async () => {
+  m.call.mockResolvedValue({ visitorId: 'visitor-1' });
   await createVisitor(makeSession(), {
     visitorName: 'Test Visitor',
     purpose: 'Friend',
     expectedArrival: '2099-09-09T12:00',
   });
-  const payload = m.add.mock.calls[0][1];
-  expect(payload).toEqual(
-    expect.objectContaining({
-      communityId: 'community-1',
-      hostUserId: 'resident-1',
-      flatId: 'unit-1',
-      status: 'expected',
-      isApproved: false,
-      approvedBy: null,
-      approvedAt: null,
-      actualArrival: null,
-      departure: null,
-    }),
-  );
-  expect(payload.visitorPassCode).toMatch(/^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/);
-  expect(payload.qrToken).toHaveLength(32);
-  expect(payload).not.toHaveProperty('checkedInAt');
+  expect(m.call).toHaveBeenCalledWith('createVisitorInvitation', expect.objectContaining({
+    visitorName: 'Test Visitor',
+    purpose: 'Friend',
+    expectedArrival: new Date('2099-09-09T12:00').getTime(),
+  }));
+  const request = m.call.mock.calls[0][1];
+  expect(request).not.toHaveProperty('qrToken');
+  expect(request).not.toHaveProperty('visitorPassCode');
+  expect(request).not.toHaveProperty('communityId');
+  expect(request).not.toHaveProperty('flatId');
+  expect(m.add).not.toHaveBeenCalledWith('visitors', expect.anything());
 });
 it('refuses stale unit assignments before writing', async () => {
   m.profile = { ...residentData, flatId: 'different-unit' };

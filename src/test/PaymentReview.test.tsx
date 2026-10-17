@@ -1,6 +1,12 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
-import { PaymentReviewSection, paymentReference } from '../components/PaymentReview';
+import {
+  parseInrRupeesToMinorUnits,
+  isConfirmedV2SettlementResponse,
+  PaymentReviewSection,
+  paymentReference,
+  paymentVerificationErrorMessage,
+} from '../components/PaymentReview';
 import { hasValidV2PaymentProof, isV2PaymentProof, type Data } from '../models';
 
 const noop = vi.fn();
@@ -94,6 +100,123 @@ it('enables V2 Verify only after receipt is loaded in the current detail session
   expect(onVerify).toHaveBeenCalledOnce();
 });
 
+it('requires an explicit received amount and bank confirmation for flexible V2 proofs', () => {
+  const onVerify = vi.fn();
+  render(
+    <PaymentReviewSection
+      data={v2Proof({ amountContractVersion: 2 })}
+      paymentId="proof-1"
+      canReview
+      busy={false}
+      receipt="blob:receipt"
+      onViewReceipt={noop}
+      onVerify={onVerify}
+      onReject={noop}
+    />,
+  );
+
+  const amountInput = screen.getByRole('textbox', { name: 'Amount received in INR' });
+  expect(amountInput).toHaveValue('');
+  expect(screen.getByText('Submitted amount')).toBeInTheDocument();
+  expect(screen.getByText('Flexible; Admin confirms amount received')).toBeInTheDocument();
+  expect(screen.getByText('₹1,234.56')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Review received amount' })).toBeDisabled();
+
+  fireEvent.change(amountInput, { target: { value: '1,234.56' } });
+  expect(screen.getByRole('alert')).toHaveTextContent(/positive INR amount/);
+  fireEvent.change(amountInput, { target: { value: '999.99' } });
+  expect(screen.getByRole('status')).toHaveTextContent(/Resident claimed ₹1,234.56/);
+  fireEvent.click(screen.getByRole('button', { name: 'Review received amount' }));
+
+  expect(screen.getByRole('alertdialog')).toHaveTextContent('Resident claim: ₹1,234.56');
+  expect(screen.getByRole('alertdialog')).toHaveTextContent('Amount received: ₹999.99');
+  const submit = screen.getByRole('button', { name: 'Confirm and verify payment' });
+  expect(submit).toBeDisabled();
+  fireEvent.click(screen.getByRole('checkbox'));
+  expect(submit).toBeEnabled();
+  fireEvent.click(submit);
+  expect(onVerify).toHaveBeenCalledWith(99999);
+});
+
+it('keeps flexible confirmation retry amount stable and blocks double submission', async () => {
+  let resolveAction: (() => void) | undefined;
+  const onVerify = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        resolveAction = resolve;
+      }),
+  );
+  render(
+    <PaymentReviewSection
+      data={v2Proof({ amountContractVersion: 2 })}
+      paymentId="proof-1"
+      canReview
+      busy={false}
+      receipt="blob:receipt"
+      onViewReceipt={noop}
+      onVerify={onVerify}
+      onReject={noop}
+    />,
+  );
+  fireEvent.change(screen.getByRole('textbox', { name: 'Amount received in INR' }), {
+    target: { value: '1234.56' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Review received amount' }));
+  fireEvent.click(screen.getByRole('checkbox'));
+  const submit = screen.getByRole('button', { name: 'Confirm and verify payment' });
+  fireEvent.click(submit);
+  fireEvent.click(submit);
+  expect(onVerify).toHaveBeenCalledTimes(1);
+  expect(onVerify).toHaveBeenCalledWith(123456);
+  resolveAction?.();
+});
+
+it('preserves legacy V2 paymentId-only review and formats settlement errors safely', () => {
+  const onVerify = vi.fn();
+  render(
+    <PaymentReviewSection
+      data={v2Proof()}
+      paymentId="proof-1"
+      canReview
+      busy={false}
+      receipt="blob:receipt"
+      onViewReceipt={noop}
+      onVerify={onVerify}
+      onReject={noop}
+    />,
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'Verify payment' }));
+  expect(onVerify).toHaveBeenCalledWith(undefined);
+  expect(paymentVerificationErrorMessage(new Error('duplicate_payment_reference'))).toMatch(
+    /already recorded/,
+  );
+  expect(paymentVerificationErrorMessage(new Error('Bill revision changed'))).toMatch(
+    /balance changed/,
+  );
+  expect(
+    paymentVerificationErrorMessage(new Error('Only pending V2 proofs can be approved.')),
+  ).toMatch(/no longer pending/);
+  expect(
+    paymentVerificationErrorMessage(new Error('settlement response could not be confirmed')),
+  ).toMatch(/same confirmed amount/);
+});
+
+it('parses INR to paise without float rounding and rejects invalid amounts', () => {
+  expect(parseInrRupeesToMinorUnits('1200')).toBe(120000);
+  expect(parseInrRupeesToMinorUnits('1200.5')).toBe(120050);
+  expect(parseInrRupeesToMinorUnits('0.01')).toBe(1);
+  expect(parseInrRupeesToMinorUnits('0')).toBeNull();
+  expect(parseInrRupeesToMinorUnits('1.001')).toBeNull();
+  expect(parseInrRupeesToMinorUnits('1,200')).toBeNull();
+  expect(isConfirmedV2SettlementResponse({ success: true, transactionId: 'settlement-1' })).toBe(
+    true,
+  );
+  expect(isConfirmedV2SettlementResponse({ success: false, transactionId: 'settlement-1' })).toBe(
+    false,
+  );
+  expect(isConfirmedV2SettlementResponse({ success: true })).toBe(false);
+});
+
 it('requires a trimmed reason before V2 Reject and passes the trimmed reason', () => {
   const onReject = vi.fn();
   render(
@@ -164,7 +287,7 @@ it('keeps completed V2 wording specific to the proof, with no review controls', 
 it('fails closed for malformed exact V2 without V1 financial or review fallback', () => {
   review(v2Proof({ currency: 'USD', amount: 999 }), true, 'proof-1');
 
-  expect(screen.getByText('V2 payment proof unavailable')).toBeInTheDocument();
+  expect(screen.getByText('Payment proof unavailable')).toBeInTheDocument();
   expect(screen.queryByText(/₹/)).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'View receipt' })).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Verify payment' })).not.toBeInTheDocument();

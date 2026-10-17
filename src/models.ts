@@ -468,6 +468,7 @@ export function hasValidV2PaymentProof(data: Data, documentId?: string): boolean
     data.method === 'upi' &&
     data.provider === 'direct_upi' &&
     data.evidenceType === 'receipt' &&
+    (data.amountContractVersion == null || data.amountContractVersion === 2) &&
     (status === 'pending' || status === 'failed' || status === 'completed') &&
     (status !== 'pending' || !!str(data.receiptPath))
   );

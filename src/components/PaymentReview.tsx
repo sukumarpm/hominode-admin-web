@@ -8,7 +8,62 @@ import {
   str,
   type Data,
 } from '../models';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
+
+const MAX_SAFE_MINOR = Number.MAX_SAFE_INTEGER;
+
+/** Parse rupees without floating-point rounding; blank or malformed input fails closed. */
+export function parseInrRupeesToMinorUnits(value: string): number | null {
+  const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(value.trim());
+  if (!match) return null;
+  try {
+    const paise = BigInt(match[1]) * 100n + BigInt((match[2] ?? '').padEnd(2, '0') || '0');
+    return paise > 0n && paise <= BigInt(MAX_SAFE_MINOR) ? Number(paise) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function paymentVerificationErrorMessage(error: unknown): string {
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  if (
+    message.includes('duplicate_payment_reference') ||
+    message.includes('reference is already recorded')
+  ) {
+    return 'This payment reference is already recorded for the resident account. Check the bank record before retrying.';
+  }
+  if (
+    message.includes('revision changed') ||
+    message.includes('no longer an eligible liability') ||
+    message.includes('outstanding liability')
+  ) {
+    return 'The bill balance changed after this proof was submitted. Refresh billing and review the current balance before verifying.';
+  }
+  if (message.includes('only pending') || message.includes('proof was not found')) {
+    return 'This proof is no longer pending. Refresh the payment list.';
+  }
+  if (message.includes('receipt object does not exist') || message.includes('receipt evidence')) {
+    return 'Receipt evidence is missing or unavailable. Ask the resident to resubmit it.';
+  }
+  if (
+    message.includes('idempotency_conflict') ||
+    message.includes('immutable_financial_conflict') ||
+    message.includes('settlement response could not be confirmed')
+  ) {
+    return 'This proof may already have been reviewed with a different amount. Refresh its status and retry only with the same confirmed amount.';
+  }
+  return 'Payment verification failed. Check the proof and current bill balance, then retry.';
+}
+
+export function isConfirmedV2SettlementResponse(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const response = value as Record<string, unknown>;
+  return (
+    response.success === true &&
+    typeof response.transactionId === 'string' &&
+    response.transactionId.trim().length > 0
+  );
+}
 
 function formattedValue(value: unknown): string {
   const normalized = str(value).replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
@@ -76,7 +131,7 @@ export function PaymentReviewDetails({
 }) {
   if (isV2PaymentProof(data)) {
     if (!hasValidV2PaymentProof(data, paymentId)) {
-      return <p role="status">V2 payment proof unavailable</p>;
+      return <p role="status">Payment proof unavailable</p>;
     }
     const paymentValues: [string, string][] = [
       ['Payment method', 'UPI'],
@@ -89,6 +144,8 @@ export function PaymentReviewDetails({
       ...(paymentId ? ([['Payment / Proof ID', paymentId]] as [string, string][]) : []),
       ['Payment reference', str(data.paymentReference) || 'Not provided'],
       ['Bill reference', str(data.billId)],
+      ['Bill revision submitted', str(data.submittedBillRevisionId) || 'Not specified'],
+      ['Community reference', str(data.communityId)],
       ['Resident reference', str(data.residentId)],
     ];
     return (
@@ -99,6 +156,12 @@ export function PaymentReviewDetails({
             className="payment-review-summary"
             values={[
               ['Submitted amount', formatInrMinorUnits(data.submittedAmountMinor)],
+              [
+                'Amount requirement',
+                data.amountContractVersion === 2
+                  ? 'Flexible; Admin confirms amount received'
+                  : 'Exact outstanding balance',
+              ],
               ['Status', formattedValue(data.status)],
             ]}
           />
@@ -186,12 +249,25 @@ export function PaymentReviewSection({
   busy: boolean;
   receipt: string;
   onViewReceipt: () => void;
-  onVerify: () => void;
+  onVerify: (confirmedAmountMinor?: number) => void | Promise<void>;
   onReject: (reason: string) => void;
 }) {
   const [reason, setReason] = useState('');
+  const [receivedAmount, setReceivedAmount] = useState('');
+  const [amountConfirmed, setAmountConfirmed] = useState(false);
+  const [showAmountConfirmation, setShowAmountConfirmation] = useState(false);
+  const [verifySubmitting, setVerifySubmitting] = useState(false);
+  const verifyLock = useRef(false);
   const isV2 = isV2PaymentProof(data);
   const validV2 = isV2 && hasValidV2PaymentProof(data, paymentId);
+  const flexibleAmountProof = validV2 && data.amountContractVersion === 2;
+  const unsupportedAmountContract =
+    isV2 && data.amountContractVersion != null && data.amountContractVersion !== 2;
+  const receivedMinor = parseInrRupeesToMinorUnits(receivedAmount);
+  const claimedMinor =
+    typeof data.submittedAmountMinor === 'number' ? data.submittedAmountMinor : null;
+  const amountMismatch =
+    receivedMinor != null && claimedMinor != null && receivedMinor !== claimedMinor;
   const isPending = str(data.status) === 'pending';
   const paymentMethod = str(data.method ?? data.paymentMethod).toLowerCase();
   const isAdminAttestedMethod = ['cash', 'bank_transfer', 'cheque', 'manual'].includes(
@@ -199,6 +275,17 @@ export function PaymentReviewSection({
   );
   const hasReceipt = !!str(data.receiptPath) && (!isV2 || validV2);
   const showReceiptButton = hasReceipt && (!isV2 || canReview);
+  const handleVerify = (confirmedAmountMinor?: number) => {
+    if (verifyLock.current) return;
+    verifyLock.current = true;
+    setVerifySubmitting(true);
+    void Promise.resolve(onVerify(confirmedAmountMinor)).finally(() => {
+      verifyLock.current = false;
+      setVerifySubmitting(false);
+      setShowAmountConfirmation(false);
+      setAmountConfirmed(false);
+    });
+  };
 
   return (
     <section className="payment-review-section" aria-label="Payment review">
@@ -212,14 +299,90 @@ export function PaymentReviewSection({
       {validV2 && canReview && isPending && (
         <div className="payment-review-controls">
           <h3>Review controls</h3>
-          <button
-            type="button"
-            className="primary"
-            onClick={onVerify}
-            disabled={busy || !receipt}
-          >
-            Verify payment
-          </button>
+          {flexibleAmountProof ? (
+            <div className="flexible-payment-review">
+              <label>
+                Amount received (INR)
+                <input
+                  aria-label="Amount received in INR"
+                  inputMode="decimal"
+                  value={receivedAmount}
+                  onChange={(event) => {
+                    setReceivedAmount(event.target.value);
+                    setAmountConfirmed(false);
+                    setShowAmountConfirmation(false);
+                  }}
+                  placeholder="Enter amount from bank records"
+                  disabled={busy || verifySubmitting}
+                />
+              </label>
+              {receivedAmount && receivedMinor == null && (
+                <p role="alert">Enter a positive INR amount with up to two decimal places.</p>
+              )}
+              {amountMismatch && (
+                <p role="status">
+                  Resident claimed {formatInrMinorUnits(claimedMinor)}; entered received amount is{' '}
+                  {formatInrMinorUnits(receivedMinor)}. Settlement uses the amount you confirm.
+                </p>
+              )}
+              {!showAmountConfirmation ? (
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={() => setShowAmountConfirmation(true)}
+                  disabled={busy || verifySubmitting || !receipt || receivedMinor == null}
+                >
+                  Review received amount
+                </button>
+              ) : (
+                <div role="alertdialog" aria-label="Confirm received payment amount">
+                  <p>Resident claim: {formatInrMinorUnits(claimedMinor)}</p>
+                  <p>Amount received: {formatInrMinorUnits(receivedMinor)}</p>
+                  {amountMismatch && (
+                    <p role="alert">
+                      The amounts differ. The confirmed amount will determine settlement.
+                    </p>
+                  )}
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={amountConfirmed}
+                      onChange={(event) => setAmountConfirmed(event.target.checked)}
+                      disabled={busy || verifySubmitting}
+                    />
+                    I independently confirmed receipt against community bank records.
+                  </label>
+                  <button
+                    type="button"
+                    className="primary"
+                    onClick={() => handleVerify(receivedMinor ?? undefined)}
+                    disabled={busy || verifySubmitting || !amountConfirmed || receivedMinor == null}
+                  >
+                    {verifySubmitting ? 'Verifying…' : 'Confirm and verify payment'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowAmountConfirmation(false)}
+                    disabled={busy || verifySubmitting}
+                  >
+                    Edit amount
+                  </button>
+                </div>
+              )}
+              {unsupportedAmountContract && (
+                <p role="alert">Unsupported proof amount contract. Review is blocked.</p>
+              )}
+            </div>
+          ) : (
+            <button
+              type="button"
+              className="primary"
+              onClick={() => handleVerify()}
+              disabled={busy || verifySubmitting || !receipt || unsupportedAmountContract}
+            >
+              {verifySubmitting ? 'Verifying…' : 'Verify payment'}
+            </button>
+          )}
           <label>
             Rejection reason
             <textarea value={reason} onChange={(event) => setReason(event.target.value)} />
@@ -227,7 +390,7 @@ export function PaymentReviewSection({
           <button
             type="button"
             onClick={() => onReject(reason.trim())}
-            disabled={!reason.trim() || busy}
+            disabled={!reason.trim() || busy || verifySubmitting}
           >
             Reject proof
           </button>
@@ -236,8 +399,13 @@ export function PaymentReviewSection({
       {!isV2 && canReview && isPending && !isAdminAttestedMethod && (
         <div className="payment-review-controls">
           <h3>Review controls</h3>
-          <button type="button" className="primary" onClick={onVerify} disabled={busy}>
-            Verify payment
+          <button
+            type="button"
+            className="primary"
+            onClick={() => handleVerify()}
+            disabled={busy || verifySubmitting}
+          >
+            {verifySubmitting ? 'Verifying…' : 'Verify payment'}
           </button>
           <label>
             Rejection reason

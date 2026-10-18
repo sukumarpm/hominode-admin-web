@@ -1,3 +1,4 @@
+import { collection, where } from 'firebase/firestore';
 import { renderHook, act } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
 import { makeSession } from './fixtures';
@@ -275,4 +276,25 @@ it.each([
   expect(m.listeners).toHaveLength(start + 2);
   unmount();
   m.listeners.slice(start).forEach((listener) => expect(listener.stop).toHaveBeenCalledOnce());
+});
+
+it('scopes canonical and legacy Admin announcement listeners and filters canonical records by type', () => {
+  const collectionStart = vi.mocked(collection).mock.calls.length;
+  const filterStart = vi.mocked(where).mock.calls.length;
+  const mounted = renderHook(() => useRows(makeSession('admin'), 'notices'));
+  expect(
+    vi
+      .mocked(collection)
+      .mock.calls.slice(collectionStart)
+      .map((call) => call[1]),
+  ).toEqual(['events_announcements', 'notices', 'announcements']);
+  const filters = vi.mocked(where).mock.calls.slice(filterStart);
+  expect(filters.filter((call) => call[0] === 'communityId')).toHaveLength(3);
+  expect(
+    filters
+      .filter((call) => call[0] === 'communityId')
+      .every((call) => call[1] === '==' && call[2] === 'community-1'),
+  ).toBe(true);
+  expect(filters).toContainEqual(['type', '==', 'announcement']);
+  mounted.unmount();
 });

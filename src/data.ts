@@ -575,3 +575,35 @@ export function titleOf(d: Data) {
       .find(Boolean) || 'Details'
   );
 }
+
+/** Existing community gallery contract; active records only, no client writes. */
+export function useApartmentImages(session: Session): Resource {
+  const config = useMemo(() => {
+    try {
+      const communityId = assertScope(session);
+      return {
+        spec: {
+          collection: 'apartmentImages',
+          filters: [
+            ['communityId', '==', communityId],
+            ['status', '==', 'active'],
+          ] as Filter[],
+        } as Spec,
+        error: '',
+      };
+    } catch {
+      return { spec: null, error: 'Photos are unavailable.' };
+    }
+  }, [session]);
+  const key = JSON.stringify(['apartment-images', session.uid, session.community?.id, config.spec]);
+  const fallback = useMemo<Resource>(
+    () => (config.error ? { rows: [], loading: false, error: config.error } : initial),
+    [config.error],
+  );
+  const listen = useCallback(
+    (notify: () => void) => (config.spec ? subscribe(key, config.spec, notify) : () => {}),
+    [key, config.spec],
+  );
+  const snapshot = useCallback(() => stores.get(key)?.state || fallback, [key, fallback]);
+  return useSyncExternalStore(listen, snapshot, snapshot);
+}

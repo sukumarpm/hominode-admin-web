@@ -298,3 +298,54 @@ it('scopes canonical and legacy Admin announcement listeners and filters canonic
   expect(filters).toContainEqual(['type', '==', 'announcement']);
   mounted.unmount();
 });
+
+it('reads active apartment image records only in the authorized community', async () => {
+  const { useApartmentImages } = await import('../data');
+  const firestore = await import('firebase/firestore');
+  const start = m.listeners.length;
+  const session = makeSession();
+  const { result, unmount } = renderHook(() => useApartmentImages(session));
+  expect(firestore.collection).toHaveBeenCalledWith(expect.anything(), 'apartmentImages');
+  expect(firestore.where).toHaveBeenCalledWith('communityId', '==', 'community-1');
+  expect(firestore.where).toHaveBeenCalledWith('status', '==', 'active');
+  const listener = m.listeners[start];
+  act(() =>
+    listener.next({
+      docs: [
+        { id: 'own', data: () => ({ communityId: 'community-1', status: 'active' }) },
+        { id: 'foreign', data: () => ({ communityId: 'community-2', status: 'active' }) },
+        { id: 'inactive', data: () => ({ communityId: 'community-1', status: 'deleted' }) },
+      ],
+    }),
+  );
+  expect(result.current.rows.map((row) => row.id)).toEqual(['own']);
+  unmount();
+  expect(listener.stop).toHaveBeenCalledOnce();
+});
+it('gallery listener clears on community change and permission loss without stale republishing', async () => {
+  const { useApartmentImages } = await import('../data');
+  const session = makeSession('admin');
+  const { result, rerender, unmount } = renderHook(({ s }) => useApartmentImages(s), {
+    initialProps: { s: session },
+  });
+  const first = m.listeners.at(-1)!;
+  act(() =>
+    first.next({
+      docs: [{ id: 'old', data: () => ({ communityId: 'community-1', status: 'active' }) }],
+    }),
+  );
+  expect(result.current.rows).toHaveLength(1);
+  rerender({ s: { ...session, community: session.communities[1] } });
+  expect(result.current.rows).toHaveLength(0);
+  expect(first.stop).toHaveBeenCalledOnce();
+  const second = m.listeners.at(-1)!;
+  act(() => second.error(Error('permission-denied')));
+  act(() =>
+    second.next({
+      docs: [{ id: 'late', data: () => ({ communityId: 'community-2', status: 'active' }) }],
+    }),
+  );
+  expect(result.current.rows).toHaveLength(0);
+  expect(result.current.loading).toBe(false);
+  unmount();
+});

@@ -1,3 +1,4 @@
+import { ApartmentGallery, ProfilePhoto } from './privateImages';
 import { serverTimestamp } from 'firebase/firestore';
 import {
   ArrowRight,
@@ -2053,6 +2054,10 @@ function RecordDetails({
       ) : (
         <>
           {module === 'facilities' && <FacilityGallery data={d} title={titleOf(d)} />}
+          {module === 'residents' && <ProfilePhoto data={d} name={titleOf(d)} large />}
+          {module === 'buildings' && (
+            <ApartmentGallery session={s} buildingId={row.id} title="Apartment photos" />
+          )}
           <Pill value={moduleStatus(module, d)} />
           <DetailFields
             data={
@@ -2432,6 +2437,7 @@ export function CommunityPage() {
           <span>HOMINODE</span>
         </section>
         <Card title="Community information">
+          <ApartmentGallery session={s} />
           <DetailFields data={s.community.data} />
           <Link className="outline-link" to="/buildings">
             View buildings <ArrowRight size={17} />

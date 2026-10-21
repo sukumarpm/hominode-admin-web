@@ -308,9 +308,72 @@ it('gallery handles loading, error and empty data without a broken image', () =>
   expect(screen.getByText('Loading photos…')).toBeVisible();
   mock.resource = { rows: [], loading: false, error: 'permission-denied secret' };
   view.rerender(wrap(<ApartmentGallery session={makeSession()} />));
-  expect(screen.getByText('Photos are unavailable.')).toBeVisible();
+  expect(screen.getByRole('alert')).toBeVisible();
   mock.resource.error = '';
   view.rerender(wrap(<ApartmentGallery session={makeSession()} />));
   expect(screen.getByText('No photos available.')).toBeVisible();
+  expect(screen.queryByRole('img')).not.toBeInTheDocument();
+});
+
+it('community gallery separates common-area photos, preserves legacy reads and removes generated captions', async () => {
+  mock.resource.rows = [
+    {
+      id: 'unit',
+      data: {
+        communityId: 'community-1',
+        buildingId: 'tower-1',
+        status: 'active',
+        type: 'Apartment',
+        title: 'Private unit',
+      },
+    },
+    {
+      id: 'common',
+      data: {
+        communityId: 'community-1',
+        buildingId: 'tower-2',
+        status: 'active',
+        type: 'Common Area',
+        title: 'Apartment Image 1234',
+        description: 'Apartment image',
+        createdAt: new Date('2026-01-01'),
+        imageUrl: 'https://example.invalid/common.jpg',
+      },
+    },
+    {
+      id: 'legacy',
+      data: {
+        communityId: 'community-1',
+        buildingId: 'tower-1',
+        status: 'active',
+        title: 'Garden',
+        createdAt: new Date('2025-01-01'),
+        imageUrl: 'https://example.invalid/garden.jpg',
+      },
+    },
+  ];
+  render(wrap(<ApartmentGallery session={makeSession()} communityOnly />));
+  expect(await screen.findByRole('img')).toHaveAttribute(
+    'src',
+    'https://example.invalid/common.jpg',
+  );
+  expect(screen.getByText('1 / 2')).toBeVisible();
+  expect(screen.queryByText('Apartment Image 1234')).not.toBeInTheDocument();
+  expect(screen.queryByText('Apartment image')).not.toBeInTheDocument();
+  expect(screen.queryByText('Private unit')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Next community photos' }));
+  expect(await screen.findByRole('img')).toHaveAttribute('alt', 'Garden');
+});
+it('gallery denied reads remain contextual and never display stale photos', () => {
+  mock.resource = {
+    rows: [],
+    loading: false,
+    error: 'Missing or insufficient permissions private/path',
+  };
+  render(wrap(<ApartmentGallery session={makeSession()} title="Building photos" />));
+  expect(screen.getByRole('alert')).toHaveTextContent(
+    'Access to building photos could not be verified',
+  );
+  expect(document.body.textContent).not.toContain('private/path');
   expect(screen.queryByRole('img')).not.toBeInTheDocument();
 });

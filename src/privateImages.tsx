@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { call, firebase } from './firebase';
-import { type Data, type Session, str, dateOf } from './models';
+import { type Data, type Session, type Row, str, dateOf } from './models';
 import { assertScope } from './policy';
 import { useAuth } from './session';
 import { safeUrl, useApartmentImages } from './data';
@@ -203,10 +203,14 @@ export function ApartmentGallery({
   session,
   buildingId,
   title = 'Community photos',
+  communityOnly = false,
+  actions,
 }: {
   session: Session;
   buildingId?: string;
   title?: string;
+  communityOnly?: boolean;
+  actions?: (photo: Row) => ReactNode;
 }) {
   const resource = useApartmentImages(session);
   const photos = resource.rows
@@ -214,7 +218,8 @@ export function ApartmentGallery({
       ({ data }) =>
         data.communityId === session.community?.id &&
         data.status === 'active' &&
-        (!buildingId || data.buildingId === buildingId),
+        (!buildingId || data.buildingId === buildingId) &&
+        (!communityOnly || !str(data.type) || str(data.type).toLowerCase() === 'common area'),
     )
     .sort(
       (a, b) =>
@@ -226,41 +231,68 @@ export function ApartmentGallery({
     selection.scope === scope ? photos.findIndex((photo) => photo.id === selection.id) : 0;
   const index = Math.max(0, selected);
   const photo = photos[index];
-  if (resource.loading) return <p role="status">Loading photos…</p>;
-  if (resource.error) return <p role="status">Photos are unavailable.</p>;
-  if (!photo) return <p>No photos available.</p>;
+  const state = resource.loading
+    ? 'Loading photos…'
+    : resource.error
+      ? `Access to ${title.toLowerCase()} could not be verified. Please retry or contact management.`
+      : !photo
+        ? 'No photos available.'
+        : '';
+  if (state)
+    return (
+      <section className="private-image-gallery" aria-label={title}>
+        <h3>{title}</h3>
+        <p role={resource.error ? 'alert' : 'status'}>{state}</p>
+      </section>
+    );
+  if (!photo) return null;
+  const caption = str(photo.data.title).replace(/^Apartment Image \d+$/i, '');
+  const description = str(photo.data.description).replace(/^Apartment image$/i, '');
   const change = (delta: number) =>
     setSelection({ scope, id: photos[(index + delta + photos.length) % photos.length].id });
   return (
     <section aria-label={title} className="private-image-gallery">
       <h3>{title}</h3>
-      <StorageImage
-        key={`${scope}/${photo.id}`}
-        reference={apartmentImageReference(photo.data)}
-        alt={str(photo.data.title) || title}
-      />
-      {str(photo.data.description) && <p>{str(photo.data.description)}</p>}
-      {photos.length > 1 && (
-        <div className="toolbar-actions">
-          <button
-            type="button"
-            onClick={() => change(-1)}
-            aria-label={`Previous ${title.toLowerCase()}`}
-          >
-            Previous
-          </button>
-          <span aria-live="polite">
-            {index + 1} / {photos.length}
-          </span>
-          <button
-            type="button"
-            onClick={() => change(1)}
-            aria-label={`Next ${title.toLowerCase()}`}
-          >
-            Next
-          </button>
+      <figure>
+        <div className="private-image-frame">
+          <StorageImage
+            key={`${scope}/${photo.id}`}
+            reference={apartmentImageReference(photo.data)}
+            alt={caption || `${title} ${index + 1}`}
+            fallback={`This ${title.toLowerCase()} image is unavailable or access was denied.`}
+          />
         </div>
-      )}
+        {(caption || description) && (
+          <figcaption>
+            {caption && <strong>{caption}</strong>}
+            {description && <p>{description}</p>}
+          </figcaption>
+        )}
+      </figure>
+      <div className="private-image-controls">
+        <span aria-live="polite">
+          {index + 1} / {photos.length}
+        </span>
+        {photos.length > 1 && (
+          <>
+            <button
+              type="button"
+              onClick={() => change(-1)}
+              aria-label={`Previous ${title.toLowerCase()}`}
+            >
+              Previous
+            </button>
+            <button
+              type="button"
+              onClick={() => change(1)}
+              aria-label={`Next ${title.toLowerCase()}`}
+            >
+              Next
+            </button>
+          </>
+        )}
+        {actions?.(photo)}
+      </div>
     </section>
   );
 }

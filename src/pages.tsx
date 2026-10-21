@@ -1,4 +1,5 @@
 import { ApartmentGallery, ProfilePhoto } from './privateImages';
+import { CommunityPhotoManager } from './CommunityPhotoManager';
 import { serverTimestamp } from 'firebase/firestore';
 import {
   ArrowRight,
@@ -2437,7 +2438,7 @@ export function CommunityPage() {
           <span>HOMINODE</span>
         </section>
         <Card title="Community information">
-          <ApartmentGallery session={s} />
+          <CommunityPhotoManager key={`${s.uid}/${s.community.id}`} session={s} />
           <DetailFields data={s.community.data} />
           <Link className="outline-link" to="/buildings">
             View buildings <ArrowRight size={17} />

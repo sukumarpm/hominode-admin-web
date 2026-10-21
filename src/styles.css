@@ -5870,3 +5870,55 @@ img.avatar {
   min-width: 0;
   margin-block: 16px;
 }
+
+/* Shared apartment/community media presentation; scoped to existing galleries. */
+.private-image-gallery figure {
+  margin: 0;
+}
+.private-image-frame {
+  aspect-ratio: 16 / 10;
+  max-height: 320px;
+  background: #eef3f8;
+  border-radius: 12px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.private-image-frame img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.private-image-frame [role='status'] {
+  padding: 16px;
+  text-align: center;
+}
+.private-image-gallery figcaption {
+  margin-block: 10px;
+  overflow-wrap: anywhere;
+}
+.private-image-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.community-photo-selection {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-block: 16px;
+}
+.community-photo-selection > div {
+  max-width: 220px;
+}
+.community-photo-selection img {
+  width: 100%;
+  height: 140px;
+  object-fit: contain;
+  background: #eef3f8;
+  border-radius: 12px;
+}

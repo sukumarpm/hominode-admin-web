@@ -84,7 +84,7 @@ function AuthenticatedShell({
   );
   const brand = (
     <Link className="brand" to={base + (resident ? '' : 'dashboard')}>
-      <img src="/images/logo.png" alt="" />
+      <img src="/branding/admin_transparent.png" alt="" />
       <strong>HOMINODE</strong>
       <span>Smart living. Better lives.</span>
     </Link>

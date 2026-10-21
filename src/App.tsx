@@ -137,7 +137,7 @@ function Landing() {
   const [slug, setSlug] = useState('');
   return (
     <main className="landing">
-      <img src="/images/logo.png" alt="Hominode" />
+      <img src="/branding/admin_transparent.png" alt="Hominode" />
       <p className="eyebrow">SMART PLACE. BETTER LIVES.</p>
       <h1>
         Better community.

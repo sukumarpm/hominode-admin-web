@@ -5908,19 +5908,48 @@ img.avatar {
 
 .community-photo-selection {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 16px;
   margin-block: 16px;
 }
-.community-photo-selection > div {
-  max-width: 220px;
+.community-photo-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
+  gap: 16px;
 }
-.community-photo-selection img {
-  width: 100%;
-  height: 140px;
-  object-fit: contain;
-  background: #eef3f8;
+.community-photo-preview-card {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border, #d8e0e8);
   border-radius: 12px;
+  background: var(--surface, #fff);
+}
+.community-photo-preview-card img {
+  width: 100%;
+  height: 160px;
+  object-fit: cover;
+  background: #eef3f8;
+  border-radius: 8px;
+}
+.community-photo-preview-card label {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+.community-photo-preview-card input {
+  width: 100%;
+  min-width: 0;
+}
+.community-photo-preview-status {
+  margin: 10px 0 0;
+  color: var(--success, #176b45);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+.community-photo-selection-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 .photo-management-error {

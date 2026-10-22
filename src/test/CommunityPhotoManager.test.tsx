@@ -82,7 +82,12 @@ it('COMMUNITY upload requires no building and keeps pending previews separate fr
     'Old photos',
   );
   await choose();
-  expect(screen.getByText(/Pending uploads/)).toBeVisible();
+  const pending = screen.getByLabelText('Pending photo uploads');
+  expect(pending.firstElementChild).toHaveTextContent('Pending uploads');
+  expect(pending.querySelector('.community-photo-preview-grid')).toBeInTheDocument();
+  expect(within(pending).getByText('Ready to upload')).toBeVisible();
+  expect(within(pending).getByLabelText('Photo 1 title')).toBeVisible();
+  expect(pending.lastElementChild).toHaveClass('community-photo-selection-actions');
   fireEvent.click(screen.getByRole('button', { name: 'Upload Photos' }));
   await screen.findByText(/Photos added/);
   expect(mock.construct).toHaveBeenCalledWith(
@@ -104,6 +109,9 @@ it('BUILDING upload uses only the selected canonical building', async () => {
     />,
   );
   await choose();
+  expect(screen.getByLabelText('Pending photo uploads')).toHaveTextContent(
+    'Ready to upload',
+  );
   fireEvent.click(screen.getByRole('button', { name: 'Upload Photos' }));
   await screen.findByText(/Photos added/);
   expect(mock.construct).toHaveBeenCalledWith(

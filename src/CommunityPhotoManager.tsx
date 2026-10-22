@@ -158,45 +158,51 @@ export function CommunityPhotoManager({
       {!!files.length && (
         <div className="community-photo-selection" aria-label="Pending photo uploads">
           <p>Pending uploads — these previews are not yet in the gallery.</p>
-          {files.map((item, index) => (
-            <div key={index}>
-              <img src={item.preview} alt={`Selected photo ${index + 1}`} />
-              <label>
-                Photo {index + 1} title
-                <input
-                  value={item.title}
-                  maxLength={200}
-                  disabled={busy || !!item.job}
-                  onChange={(e) =>
-                    setFiles(
-                      files.map((entry, i) =>
-                        i === index ? { ...entry, title: e.target.value } : entry,
-                      ),
-                    )
-                  }
-                />
-              </label>
-              {item.done && <p>Added</p>}
-            </div>
-          ))}
-          <button type="button" disabled={busy} onClick={upload}>
-            {busy
-              ? 'Uploading…'
-              : files.some((item) => item.job)
-                ? 'Retry Upload'
-                : 'Upload Photos'}
-          </button>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => {
-              files.forEach((item) => URL.revokeObjectURL(item.preview));
-              setFiles([]);
-              setError('');
-            }}
-          >
-            Remove Selection
-          </button>
+          <div className="community-photo-preview-grid">
+            {files.map((item, index) => (
+              <div className="community-photo-preview-card" key={index}>
+                <img src={item.preview} alt={`Selected photo ${index + 1}`} />
+                <label>
+                  Photo {index + 1} title
+                  <input
+                    value={item.title}
+                    maxLength={200}
+                    disabled={busy || !!item.job}
+                    onChange={(e) =>
+                      setFiles(
+                        files.map((entry, i) =>
+                          i === index ? { ...entry, title: e.target.value } : entry,
+                        ),
+                      )
+                    }
+                  />
+                </label>
+                <p className="community-photo-preview-status" role="status">
+                  {item.done ? 'Added' : 'Ready to upload'}
+                </p>
+              </div>
+            ))}
+          </div>
+          <div className="community-photo-selection-actions">
+            <button type="button" disabled={busy} onClick={upload}>
+              {busy
+                ? 'Uploading…'
+                : files.some((item) => item.job)
+                  ? 'Retry Upload'
+                  : 'Upload Photos'}
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                files.forEach((item) => URL.revokeObjectURL(item.preview));
+                setFiles([]);
+                setError('');
+              }}
+            >
+              Remove Selection
+            </button>
+          </div>
         </div>
       )}
       {message && <p role="status">{message}</p>}

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { useRows } from './data';
+import { Modal } from './components';
+import type { PhotoScope } from './photoScope';
 import { str, type Row, type Session } from './models';
 import { ApartmentGallery } from './privateImages';
 import {
@@ -16,15 +17,21 @@ type Selection = {
   job?: CommunityPhotoUpload;
   done?: boolean;
 };
-export function CommunityPhotoManager({ session }: { session: Session }) {
-  const buildings = useRows(session, 'buildings');
-  const options = buildings.rows.filter(
-    (row) =>
-      row.data.communityId === session.community?.id &&
-      row.data.isActive !== false &&
-      row.data.status !== 'deleted',
-  );
-  const [building, setBuilding] = useState('');
+export function CommunityPhotoManager({
+  session,
+  buildingId,
+  buildingName,
+}: {
+  session: Session;
+  buildingId?: string;
+  buildingName?: string;
+}) {
+  const ownershipScope: PhotoScope = buildingId ? 'BUILDING' : 'COMMUNITY';
+  const resourceId = buildingId || session.community?.id || '';
+  const label = buildingId ? 'Building' : 'Community';
+  const targetName = buildingId
+    ? buildingName || buildingId
+    : session.community?.name || 'Community';
   const [files, setFiles] = useState<Selection[]>([]);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
@@ -32,7 +39,7 @@ export function CommunityPhotoManager({ session }: { session: Session }) {
   const [deleting, setDeleting] = useState<Row | null>(null);
   const alive = useRef(true);
   const selection = useRef(files);
-  const scope = `${session.uid}/${session.community?.id}`;
+  const scope = `${session.uid}/${session.community?.id}/${ownershipScope}/${resourceId}`;
   const currentScope = useRef(scope);
   currentScope.current = scope;
   useEffect(() => {
@@ -44,10 +51,9 @@ export function CommunityPhotoManager({ session }: { session: Session }) {
   }, []);
   selection.current = files;
   if (session.role !== 'admin') return <ApartmentGallery session={session} communityOnly />;
-  const buildingId = building || (options.length === 1 ? options[0].id : '');
   const upload = async () => {
-    if (!options.some((row) => row.id === buildingId)) {
-      setError('Select an available building first.');
+    if (files.some((item) => !item.done && !item.title.trim())) {
+      setError('Enter a title for each photo before uploading.');
       return;
     }
     setBusy(true);
@@ -57,10 +63,11 @@ export function CommunityPhotoManager({ session }: { session: Session }) {
         if (item.done) continue;
         item.job ??= new CommunityPhotoUpload(
           session,
-          buildingId,
+          resourceId,
           item.file,
           item.title,
           () => alive.current && currentScope.current === scope,
+          ownershipScope,
         );
         await item.job.run((percent) => {
           if (alive.current) setMessage(`Uploading photo: ${percent}%`);
@@ -85,12 +92,14 @@ export function CommunityPhotoManager({ session }: { session: Session }) {
     }
   };
   return (
-    <section aria-label="Community photo management">
+    <section aria-label={`${label} photo management`}>
       <ApartmentGallery
         session={session}
-        communityOnly
+        ownershipScope={ownershipScope}
+        buildingId={buildingId}
+        title={`${label} photos`}
         actions={(photo) =>
-          canDeleteCommunityPhoto(session, photo) && (
+          canDeleteCommunityPhoto(session, photo, ownershipScope, resourceId) && (
             <button
               type="button"
               disabled={busy}
@@ -104,25 +113,13 @@ export function CommunityPhotoManager({ session }: { session: Session }) {
           )
         }
       />
-      <label>
-        Photo building
-        <select
-          aria-label="Photo building"
-          value={buildingId}
-          disabled={busy || files.some((item) => !!item.job)}
-          onChange={(e) => setBuilding(e.target.value)}
-        >
-          <option value="">Select a building</option>
-          {options.map((row) => (
-            <option key={row.id} value={row.id}>
-              {str(row.data.name) || 'Building'}
-            </option>
-          ))}
-        </select>
-      </label>
-      {buildings.loading && <p role="status">Loading buildings…</p>}
-      {buildings.error && (
-        <p role="alert">Building access could not be verified. Refresh before adding photos.</p>
+      <p>
+        Manage {label.toLowerCase()} photos for {targetName}.
+      </p>
+      {!deleting && error && (
+        <p role="alert" className="photo-management-error">
+          {error}
+        </p>
       )}
       <label className="outline-link">
         Add Photos
@@ -131,7 +128,7 @@ export function CommunityPhotoManager({ session }: { session: Session }) {
           type="file"
           multiple
           accept="image/jpeg,image/png,image/webp"
-          disabled={busy || !!files.length || !!buildings.error || buildings.loading}
+          disabled={busy || !!files.length}
           onChange={async (e) => {
             const chosen = Array.from(e.target.files || []);
             e.target.value = '';
@@ -159,7 +156,8 @@ export function CommunityPhotoManager({ session }: { session: Session }) {
         />
       </label>
       {!!files.length && (
-        <div className="community-photo-selection">
+        <div className="community-photo-selection" aria-label="Pending photo uploads">
+          <p>Pending uploads — these previews are not yet in the gallery.</p>
           {files.map((item, index) => (
             <div key={index}>
               <img src={item.preview} alt={`Selected photo ${index + 1}`} />
@@ -202,13 +200,23 @@ export function CommunityPhotoManager({ session }: { session: Session }) {
         </div>
       )}
       {message && <p role="status">{message}</p>}
-      {error && <p role="alert">{error}</p>}
       {deleting && (
-        <div role="dialog" aria-modal="true" aria-label="Delete community photo">
+        <Modal
+          title={`Delete ${label.toLowerCase()} photo`}
+          onClose={() => {
+            setDeleting(null);
+          }}
+        >
+          {error && (
+            <p role="alert" className="photo-management-error">
+              {error}
+            </p>
+          )}
           <p>
-            Delete this community photo? This removes it from the community and building galleries.
+            Delete “{str(deleting.data.title) || 'Untitled photo'}” from {targetName}’s{' '}
+            {label.toLowerCase()} photos? This deletes only this scoped photo.
           </p>
-          <button type="button" disabled={busy} onClick={() => setDeleting(null)}>
+          <button type="button" autoFocus disabled={busy} onClick={() => setDeleting(null)}>
             Cancel
           </button>
           <button
@@ -218,7 +226,7 @@ export function CommunityPhotoManager({ session }: { session: Session }) {
               setBusy(true);
               setError('');
               try {
-                await deleteCommunityPhoto(session, deleting);
+                await deleteCommunityPhoto(session, deleting, ownershipScope, resourceId);
                 if (alive.current) {
                   setDeleting(null);
                   setMessage('Photo deleted.');
@@ -233,8 +241,13 @@ export function CommunityPhotoManager({ session }: { session: Session }) {
           >
             Confirm Delete
           </button>
-        </div>
+        </Modal>
       )}
+      <ApartmentGallery
+        session={session}
+        buildingId={buildingId}
+        title="Legacy photos (read-only)"
+      />
     </section>
   );
 }

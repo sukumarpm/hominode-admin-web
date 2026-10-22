@@ -1,4 +1,4 @@
-import { ApartmentGallery, ProfilePhoto } from './privateImages';
+import { ProfilePhoto } from './privateImages';
 import { CommunityPhotoManager } from './CommunityPhotoManager';
 import { serverTimestamp } from 'firebase/firestore';
 import {
@@ -2057,7 +2057,12 @@ function RecordDetails({
           {module === 'facilities' && <FacilityGallery data={d} title={titleOf(d)} />}
           {module === 'residents' && <ProfilePhoto data={d} name={titleOf(d)} large />}
           {module === 'buildings' && (
-            <ApartmentGallery session={s} buildingId={row.id} title="Apartment photos" />
+            <CommunityPhotoManager
+              key={`${s.uid}/${s.community?.id}/${row.id}`}
+              session={s}
+              buildingId={row.id}
+              buildingName={titleOf(d)}
+            />
           )}
           <Pill value={moduleStatus(module, d)} />
           <DetailFields

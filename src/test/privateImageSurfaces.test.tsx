@@ -90,9 +90,16 @@ it('Admin building details contain apartment gallery and Community page contains
     ),
   );
   expect(
-    within(screen.getByRole('dialog', { name: 'Building One' })).getByText('No photos available.'),
+    within(screen.getByRole('region', { name: 'Building photos' })).getByText(
+      'No photos available.',
+    ),
   ).toBeVisible();
   view.unmount();
   render(wrap(<CommunityPage />, makeSession('admin')));
-  expect(screen.getByText('No photos available.')).toBeVisible();
+  expect(
+    within(screen.getByRole('region', { name: 'Community photos' })).getByText(
+      'No photos available.',
+    ),
+  ).toBeVisible();
+  expect(screen.getByRole('region', { name: 'Legacy photos (read-only)' })).toBeVisible();
 });

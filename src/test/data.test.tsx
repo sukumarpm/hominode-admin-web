@@ -349,3 +349,21 @@ it('gallery listener clears on community change and permission loss without stal
   expect(result.current.loading).toBe(false);
   unmount();
 });
+it.each(['COMMUNITY', 'BUILDING'] as const)(
+  'V2 %s query selects only its canonical scope and never the legacy collection',
+  async (scope) => {
+    const { useApartmentImages } = await import('../data');
+    const s = makeSession('admin');
+    const resource = scope === 'COMMUNITY' ? s.community!.id : 'tower-1';
+    const { result, unmount } = renderHook(() => useApartmentImages(s, scope, resource));
+    expect(collection).toHaveBeenCalledWith(expect.anything(), 'apartmentImagesV2');
+    expect(where).toHaveBeenCalledWith('contractVersion', '==', 2);
+    expect(where).toHaveBeenCalledWith('ownershipScope', '==', scope);
+    expect(where).toHaveBeenCalledWith('resourceId', '==', resource);
+    const listener = m.listeners.at(-1)!;
+    act(() => listener.error(Error('permission-denied')));
+    expect(result.current.rows).toEqual([]);
+    expect(result.current.error).toContain('permission-denied');
+    unmount();
+  },
+);

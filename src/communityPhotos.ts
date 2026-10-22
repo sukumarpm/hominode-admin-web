@@ -3,6 +3,7 @@ import { currentAuthority } from './actions';
 import { call, firebase } from './firebase';
 import { str, type Data, type Row, type Session } from './models';
 import { assertScope } from './policy';
+import { matchesPhotoScope, type PhotoScope } from './photoScope';
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const extensions: Record<string, string> = {
@@ -43,10 +44,11 @@ export class CommunityPhotoUpload {
   private uploadDate = new Date();
   constructor(
     readonly session: Session,
-    readonly buildingId: string,
+    readonly resourceId: string,
     readonly file: File,
     readonly title: string,
     readonly isCurrent: () => boolean = () => true,
+    readonly ownershipScope: PhotoScope = 'BUILDING',
   ) {}
   private async authorize() {
     requireAdmin(this.session);
@@ -74,7 +76,7 @@ export class CommunityPhotoUpload {
       asset.ownerId !== this.session.uid ||
       asset.communityId !== community ||
       asset.feature !== 'apartment' ||
-      asset.resourceId !== this.buildingId ||
+      !matchesPhotoScope(asset, community, this.ownershipScope, this.resourceId) ||
       asset.bucket !== firebase().app.options.storageBucket ||
       asset.storagePath !== path ||
       asset.contentType !== type ||
@@ -86,14 +88,16 @@ export class CommunityPhotoUpload {
   }
   async run(progress: (percent: number) => void = () => {}) {
     const type = await validateCommunityPhoto(this.file);
-    if (!this.buildingId || !this.title.trim() || this.title.length > 200)
-      throw Error('Choose a building and a photo title.');
+    if (!this.resourceId || !this.title.trim() || this.title.length > 200)
+      throw Error('A valid photo scope and title are required.');
     await this.authorize();
     if (this.result) return this.result;
     if (!this.asset) {
       const asset = await call<Data>('prepareStorageImageUpload', {
         feature: 'apartment',
-        resourceId: this.buildingId,
+        contractVersion: 2,
+        ownershipScope: this.ownershipScope,
+        resourceId: this.resourceId,
         contentType: type,
         size: this.file.size,
       });
@@ -115,7 +119,7 @@ export class CommunityPhotoUpload {
             communityId: str(this.asset.communityId),
             ownerId: this.session.uid,
             feature: 'apartment',
-            resourceId: this.buildingId,
+            resourceId: this.resourceId,
           },
         },
       );
@@ -166,6 +170,7 @@ export class CommunityPhotoUpload {
       uploadTime: this.uploadDate.toTimeString().slice(0, 5),
     });
     if (
+      result.contractVersion !== 2 ||
       result.imageId !== this.asset.assetId ||
       !Number.isSafeInteger(result.revision) ||
       Number(result.revision) < 1
@@ -176,28 +181,40 @@ export class CommunityPhotoUpload {
   }
 }
 
-export function canDeleteCommunityPhoto(session: Session, photo: Row) {
+export function canDeleteCommunityPhoto(
+  session: Session,
+  photo: Row,
+  scope: PhotoScope = 'COMMUNITY',
+  resourceId = session.community?.id || '',
+) {
   return (
     session.role === 'admin' &&
     session.profile.role === 'admin' &&
-    photo.data.communityId === session.community?.id &&
+    matchesPhotoScope(photo.data, session.community?.id || '', scope, resourceId) &&
     photo.data.status === 'active' &&
-    str(photo.data.type).toLowerCase() === 'common area' &&
-    !!str(photo.data.buildingId) &&
-    (photo.data.revision === undefined ||
-      (Number.isSafeInteger(photo.data.revision) && Number(photo.data.revision) >= 0))
+    Number.isSafeInteger(photo.data.revision) &&
+    Number(photo.data.revision) >= 1
   );
 }
-export async function deleteCommunityPhoto(session: Session, photo: Row) {
+export async function deleteCommunityPhoto(
+  session: Session,
+  photo: Row,
+  scope: PhotoScope = 'COMMUNITY',
+  resourceId = session.community?.id || '',
+) {
   requireAdmin(session);
-  if (!canDeleteCommunityPhoto(session, photo))
-    throw Error('This photo cannot be deleted from the community gallery.');
+  if (!canDeleteCommunityPhoto(session, photo, scope, resourceId))
+    throw Error('This photo does not belong to the selected photo scope.');
   const current = await currentAuthority(session);
-  if (!canDeleteCommunityPhoto(current, photo) || firebase().auth.currentUser?.uid !== session.uid)
+  if (
+    !canDeleteCommunityPhoto(current, photo, scope, resourceId) ||
+    firebase().auth.currentUser?.uid !== session.uid
+  )
     throw Error('Community access changed. Refresh the page.');
   const result = await call<Data>('deleteApartmentImage', {
+    contractVersion: 2,
     imageId: photo.id,
-    expectedRevision: photo.data.revision ?? 0,
+    expectedRevision: photo.data.revision,
   });
   if (result.imageId !== photo.id || result.deleted !== true)
     throw Error('Photo deletion could not be confirmed. Refresh the gallery.');

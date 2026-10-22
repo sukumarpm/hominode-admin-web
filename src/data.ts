@@ -10,6 +10,7 @@ import {
 } from 'firebase/firestore';
 import { firebase, call } from './firebase';
 import { assertScope } from './policy';
+import type { PhotoScope } from './photoScope';
 import { type Row, type Session, type Data, dateOf, str } from './models';
 export type Module =
   | 'residents'
@@ -577,16 +578,34 @@ export function titleOf(d: Data) {
 }
 
 /** Existing community gallery contract; active records only, no client writes. */
-export function useApartmentImages(session: Session): Resource {
+export function useApartmentImages(
+  session: Session,
+  ownershipScope?: PhotoScope,
+  resourceId?: string,
+): Resource {
   const config = useMemo(() => {
     try {
       const communityId = assertScope(session);
       return {
         spec: {
-          collection: 'apartmentImages',
+          collection: ownershipScope ? 'apartmentImagesV2' : 'apartmentImages',
           filters: [
             ['communityId', '==', communityId],
             ['status', '==', 'active'],
+            ...(ownershipScope
+              ? [
+                  ['contractVersion', '==', 2],
+                  ['ownershipScope', '==', ownershipScope],
+                  [
+                    'resourceId',
+                    '==',
+                    resourceId || (ownershipScope === 'COMMUNITY' ? communityId : ''),
+                  ],
+                  ...(ownershipScope === 'BUILDING'
+                    ? [['buildingId', '==', resourceId || '']]
+                    : []),
+                ]
+              : []),
           ] as Filter[],
         } as Spec,
         error: '',
@@ -594,7 +613,7 @@ export function useApartmentImages(session: Session): Resource {
     } catch {
       return { spec: null, error: 'Photos are unavailable.' };
     }
-  }, [session]);
+  }, [session, ownershipScope, resourceId]);
   const key = JSON.stringify(['apartment-images', session.uid, session.community?.id, config.spec]);
   const fallback = useMemo<Resource>(
     () => (config.error ? { rows: [], loading: false, error: config.error } : initial),

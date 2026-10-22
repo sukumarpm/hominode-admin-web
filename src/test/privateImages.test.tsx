@@ -377,3 +377,71 @@ it('gallery denied reads remain contextual and never display stale photos', () =
   expect(document.body.textContent).not.toContain('private/path');
   expect(screen.queryByRole('img')).not.toBeInTheDocument();
 });
+it('V2 galleries isolate scopes from legacy, other buildings and UNIT records', async () => {
+  const commonAsset = {
+    ...asset,
+    contractVersion: 2,
+    ownershipScope: 'COMMUNITY',
+    resourceId: 'community-1',
+  };
+  const data = {
+    communityId: 'community-1',
+    status: 'active',
+    contractVersion: 2,
+    ownershipScope: 'COMMUNITY',
+    resourceId: 'community-1',
+    title: 'Courtyard',
+    imageAsset: commonAsset,
+  };
+  mock.resource.rows = [
+    { id: 'common', data },
+    {
+      id: 'building',
+      data: { ...data, ownershipScope: 'BUILDING', resourceId: 'tower-1', buildingId: 'tower-1' },
+    },
+    {
+      id: 'unit',
+      data: {
+        ...data,
+        ownershipScope: 'UNIT',
+        resourceId: 'unit-1',
+        unitId: 'unit-1',
+        buildingId: 'tower-1',
+      },
+    },
+    {
+      id: 'legacy',
+      data: {
+        communityId: 'community-1',
+        status: 'active',
+        buildingId: 'tower-1',
+        title: 'Old garden',
+        imageUrl: 'https://example.invalid/old.jpg',
+      },
+    },
+  ];
+  mock.call.mockResolvedValue({ ...response(), asset: commonAsset });
+  const view = render(
+    wrap(<ApartmentGallery session={makeSession()} ownershipScope="COMMUNITY" />),
+  );
+  expect(await screen.findByRole('img')).toHaveAttribute('alt', 'Courtyard');
+  expect(screen.getByText('1 / 1')).toBeVisible();
+  view.rerender(
+    wrap(
+      <ApartmentGallery
+        session={makeSession()}
+        title="Legacy photos (read-only)"
+        actions={() => <button>Delete old</button>}
+      />,
+    ),
+  );
+  expect(await screen.findByRole('img')).toHaveAttribute('alt', 'Old garden');
+  expect(screen.queryByRole('button', { name: 'Delete old' })).not.toBeInTheDocument();
+  expect(
+    apartmentImageReference({
+      ...data,
+      imageAsset: undefined,
+      imageUrl: 'https://example.invalid/unsafe-fallback.jpg',
+    }),
+  ).toBe('hominode-image:invalid');
+});

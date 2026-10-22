@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { call, firebase } from './firebase';
 import { type Data, type Session, type Row, str, dateOf } from './models';
 import { assertScope } from './policy';
+import { matchesPhotoScope, type PhotoScope } from './photoScope';
 import { useAuth } from './session';
 import { safeUrl, useApartmentImages } from './data';
 
@@ -21,16 +22,36 @@ export function profileImageReference(data: Data): string {
   return str(data.profileImage ?? data.profileImageUrl ?? data.photoURL ?? data.photoUrl);
 }
 export function apartmentImageReference(data: Data): string {
+  if (
+    (data.contractVersion !== undefined || data.ownershipScope !== undefined) &&
+    data.contractVersion !== 2
+  )
+    return prefix + 'invalid';
   if (data.imageAsset !== undefined && data.imageAsset !== null) {
     const asset = data.imageAsset as Data;
     return asset.feature === 'apartment' &&
       asset.state === 'ready' &&
       asset.communityId === data.communityId &&
-      asset.resourceId === data.buildingId &&
+      (data.contractVersion === 2
+        ? matchesPhotoScope(
+            data,
+            str(data.communityId),
+            data.ownershipScope as PhotoScope,
+            str(data.resourceId),
+          ) &&
+          matchesPhotoScope(
+            asset,
+            str(data.communityId),
+            data.ownershipScope as PhotoScope,
+            str(data.resourceId),
+          )
+        : asset.contractVersion === undefined && asset.resourceId === data.buildingId) &&
       uuid.test(str(asset.assetId))
       ? prefix + asset.assetId
       : prefix + 'invalid';
   }
+  if (data.contractVersion !== undefined || data.ownershipScope !== undefined)
+    return prefix + 'invalid';
   return str(data.imageUrl);
 }
 
@@ -52,6 +73,14 @@ export async function readPrivateImage(reference: string, session: Session): Pro
     !asset ||
     asset.provider !== 'firebase' ||
     asset.state !== 'ready' ||
+    ((asset.contractVersion !== undefined || asset.ownershipScope !== undefined) &&
+      (asset.feature !== 'apartment' ||
+        !matchesPhotoScope(
+          asset,
+          community,
+          asset.ownershipScope as PhotoScope,
+          str(asset.resourceId),
+        ))) ||
     asset.communityId !== community ||
     !uuid.test(str(asset.assetId)) ||
     (asset.assetId !== assetId &&
@@ -204,20 +233,31 @@ export function ApartmentGallery({
   buildingId,
   title = 'Community photos',
   communityOnly = false,
+  ownershipScope,
   actions,
 }: {
   session: Session;
   buildingId?: string;
   title?: string;
   communityOnly?: boolean;
+  ownershipScope?: PhotoScope;
   actions?: (photo: Row) => ReactNode;
 }) {
-  const resource = useApartmentImages(session);
+  const resourceId =
+    ownershipScope === 'COMMUNITY' ? session.community?.id || '' : buildingId || '';
+  const resource = useApartmentImages(
+    session,
+    ownershipScope,
+    ownershipScope ? resourceId : undefined,
+  );
   const photos = resource.rows
     .filter(
       ({ data }) =>
         data.communityId === session.community?.id &&
         data.status === 'active' &&
+        (ownershipScope
+          ? matchesPhotoScope(data, session.community?.id || '', ownershipScope, resourceId)
+          : data.contractVersion === undefined && data.ownershipScope === undefined) &&
         (!buildingId || data.buildingId === buildingId) &&
         (!communityOnly || !str(data.type) || str(data.type).toLowerCase() === 'common area'),
     )
@@ -226,7 +266,7 @@ export function ApartmentGallery({
         (dateOf(b.data.createdAt)?.getTime() || 0) - (dateOf(a.data.createdAt)?.getTime() || 0),
     );
   const [selection, setSelection] = useState({ scope: '', id: '' });
-  const scope = `${session.uid}/${session.community?.id}/${buildingId || ''}`;
+  const scope = `${session.uid}/${session.community?.id}/${buildingId || ''}/${ownershipScope || 'legacy'}`;
   const selected =
     selection.scope === scope ? photos.findIndex((photo) => photo.id === selection.id) : 0;
   const index = Math.max(0, selected);
@@ -291,7 +331,7 @@ export function ApartmentGallery({
             </button>
           </>
         )}
-        {actions?.(photo)}
+        {ownershipScope && actions?.(photo)}
       </div>
     </section>
   );

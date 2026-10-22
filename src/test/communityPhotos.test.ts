@@ -36,6 +36,9 @@ function file(type = 'image/png', bytes = [137, 80, 78, 71, 13, 10, 26, 10, 0, 0
 }
 function asset(state = 'pending'): Data {
   return {
+    contractVersion: 2,
+    ownershipScope: 'BUILDING',
+    buildingId: 'tower-1',
     provider: 'firebase',
     assetId: id,
     communityId: 'community-1',
@@ -81,7 +84,7 @@ beforeEach(() => {
       : name === 'completeStorageImageUpload'
         ? asset('ready')
         : name === 'saveApartmentImage'
-          ? { imageId: id, revision: 1 }
+          ? { imageId: id, revision: 1, contractVersion: 2 }
           : { imageId: id, deleted: true },
   );
 });
@@ -95,6 +98,8 @@ it('uses the Flutter staging/finalization/attachment contract, without public UR
   ]);
   expect(mock.call).toHaveBeenCalledWith('prepareStorageImageUpload', {
     feature: 'apartment',
+    contractVersion: 2,
+    ownershipScope: 'BUILDING',
     resourceId: 'tower-1',
     contentType: 'image/png',
     size: 12,
@@ -201,26 +206,29 @@ it('rejects unsupported, mismatched and oversized files before reserving', async
   await expect(validateCommunityPhoto(big)).rejects.toThrow();
   expect(mock.call).not.toHaveBeenCalled();
 });
-it('deletes only a scoped Common Area record through revision-checked server deletion', async () => {
+it('deletes only a scoped V2 record through revision-checked server deletion', async () => {
   await deleteCommunityPhoto(makeSession('admin'), {
     id,
     data: {
       communityId: 'community-1',
-      buildingId: 'tower-1',
+      contractVersion: 2,
+      ownershipScope: 'COMMUNITY',
+      resourceId: 'community-1',
       status: 'active',
       type: 'Common Area',
       revision: 2,
     },
   });
   expect(mock.call).toHaveBeenCalledExactlyOnceWith('deleteApartmentImage', {
+    contractVersion: 2,
     imageId: id,
     expectedRevision: 2,
   });
 });
 it.each([
   { communityId: 'foreign' },
-  { type: 'Apartment' },
-  { type: undefined },
+  { ownershipScope: 'BUILDING' },
+  { contractVersion: undefined },
   { status: 'deleted' },
   { revision: -1 },
 ])('never deletes unrelated media %j', async (patch) => {
@@ -229,7 +237,9 @@ it.each([
       id,
       data: {
         communityId: 'community-1',
-        buildingId: 'tower-1',
+        contractVersion: 2,
+        ownershipScope: 'COMMUNITY',
+        resourceId: 'community-1',
         status: 'active',
         type: 'Common Area',
         ...patch,
@@ -245,12 +255,20 @@ it('propagates server deletion failure instead of removing local gallery metadat
       id,
       data: {
         communityId: 'community-1',
-        buildingId: 'tower-1',
+        contractVersion: 2,
+        ownershipScope: 'COMMUNITY',
+        resourceId: 'community-1',
         status: 'active',
         type: 'Common Area',
+        revision: 1,
       },
     }),
   ).rejects.toThrow();
+  expect(mock.call).toHaveBeenCalledWith('deleteApartmentImage', {
+    contractVersion: 2,
+    imageId: id,
+    expectedRevision: 1,
+  });
 });
 it('times out a stalled byte upload without attaching a gallery record', async () => {
   vi.useFakeTimers();
@@ -266,4 +284,56 @@ it('times out a stalled byte upload without attaching a gallery record', async (
   } finally {
     vi.useRealTimers();
   }
+});
+
+it('COMMUNITY upload sends no building field and accepts the building-free V2 asset', async () => {
+  const buildingAsset = asset();
+  const response = (state: string) => {
+    const value = {
+      ...buildingAsset,
+      state,
+      ownershipScope: 'COMMUNITY',
+      resourceId: 'community-1',
+      ...(state === 'ready'
+        ? {
+            storagePath: `private_images/community-1/admin-1/${id}.png`.replace(
+              '/admin-1/',
+              '/admin-1/apartment/',
+            ),
+          }
+        : {}),
+    };
+    delete (value as Data).buildingId;
+    return value;
+  };
+  mock.call.mockImplementation(async (name: string) =>
+    name === 'prepareStorageImageUpload'
+      ? response('pending')
+      : name === 'completeStorageImageUpload'
+        ? response('ready')
+        : { contractVersion: 2, imageId: id, revision: 1 },
+  );
+  await new CommunityPhotoUpload(
+    makeSession('admin'),
+    'community-1',
+    file(),
+    'Garden',
+    () => true,
+    'COMMUNITY',
+  ).run();
+  expect(mock.call).toHaveBeenCalledWith('prepareStorageImageUpload', {
+    feature: 'apartment',
+    contractVersion: 2,
+    ownershipScope: 'COMMUNITY',
+    resourceId: 'community-1',
+    contentType: 'image/png',
+    size: 12,
+  });
+  expect(mock.upload).toHaveBeenCalledWith(
+    expect.any(String),
+    expect.any(File),
+    expect.objectContaining({
+      customMetadata: expect.objectContaining({ resourceId: 'community-1' }),
+    }),
+  );
 });

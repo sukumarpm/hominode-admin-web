@@ -499,3 +499,10 @@ export function status(d: Data): string {
   }
   return raw;
 }
+
+export function complaintStatusValue(data: Data): 'pending' | 'inprogress' | 'completed' {
+  const raw = status(data);
+  if (['inprogress', 'assigned'].includes(raw)) return 'inprogress';
+  if (['completed', 'resolved', 'closed'].includes(raw)) return 'completed';
+  return 'pending';
+}

@@ -67,6 +67,7 @@ import { call } from './firebase';
 import {
   amount,
   classifyV2Bill,
+  complaintStatusValue,
   dateLabel,
   first,
   formatInrMinorUnits,
@@ -2234,7 +2235,7 @@ function RecordDetails({
               <label>
                 Update status
                 <select
-                  defaultValue={status(d)}
+                  defaultValue={complaintStatusValue(d)}
                   onChange={(e) =>
                     void perform(() =>
                       updateScoped(s, 'complaints', row.id, { status: e.target.value }),
@@ -2243,7 +2244,7 @@ function RecordDetails({
                 >
                   <option value="pending">Pending</option>
                   <option value="inprogress">In progress</option>
-                  <option value="completed">Completed</option>
+                  <option value="completed">Resolved</option>
                 </select>
               </label>
             </>

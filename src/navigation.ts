@@ -1,5 +1,6 @@
 import {
   House,
+  Bell,
   Building2,
   Users,
   UserRound,
@@ -12,6 +13,7 @@ import {
   FileText,
   ChartNoAxesCombined,
   Settings,
+  UserRoundX,
   WalletCards,
   Car,
   ShieldAlert,
@@ -25,6 +27,7 @@ export interface Navigation {
 }
 export const adminNav: Navigation[] = [
   { path: 'dashboard', label: 'Dashboard', icon: House },
+  { path: 'notifications', label: 'Notifications', icon: Bell },
   { path: 'residents', label: 'Residents', icon: Users },
   { path: 'visitors', label: 'Visitors', icon: UserRound },
   { path: 'deliveries', label: 'Deliveries', icon: Truck },
@@ -40,6 +43,7 @@ export const adminNav: Navigation[] = [
   { path: 'parking', label: 'Parking', icon: ParkingCircle },
   { path: 'resident-vehicles', label: 'Resident Vehicles', icon: Car },
   { path: 'reports', label: 'Reports', icon: ChartNoAxesCombined },
+  { path: 'account-deletion-requests', label: 'Account Deletion Requests', icon: UserRoundX },
   { path: 'sos', label: 'Emergency SOS', icon: ShieldAlert },
   { path: 'settings', label: 'Settings', icon: Settings },
 ];

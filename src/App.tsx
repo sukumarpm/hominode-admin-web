@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link, Navigate, Outlet, Route, Routes, useParams } from 'react-router-dom';
 import { Boundary } from './components';
+import { AccountDeletionRequests } from './AccountDeletionRequests';
+import { Notifications } from './Notifications';
 import { Dashboard } from './Dashboard';
 import { type Module } from './data';
 import { call } from './firebase';
@@ -253,7 +255,7 @@ export function App() {
             <Route path="login" element={<Navigate to="/dashboard" replace />} />
             <Route element={<OperationsGuard />}>
               {Object.entries(adminModules)
-                .filter(([path]) => !['events', 'bookings'].includes(path))
+                .filter(([path]) => !['events', 'bookings', 'notifications'].includes(path))
                 .map(([path, module]) => (
                   <Route
                     key={path}
@@ -272,6 +274,8 @@ export function App() {
                 />
               </Route>
               <Route path="community" element={<CommunityPage />} />
+              <Route path="account-deletion-requests" element={<AccountDeletionRequests />} />
+              <Route path="notifications" element={<Notifications />} />
               <Route path="reports" element={<ReportsPage />} />
               <Route path="sos" element={<SosPage />} />
             </Route>

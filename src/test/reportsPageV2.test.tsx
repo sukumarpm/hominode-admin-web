@@ -1,17 +1,17 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { BillingV2FinancialReport } from '../actions';
+import type { BillingV2FinancialReport, DetailedFinancialReport } from '../actions';
 import type { Session } from '../models';
 import { ReportsPage } from '../pages';
 import { AuthContext, type AuthState } from '../session';
 import { makeSession } from './fixtures';
 
-const reportActions = vi.hoisted(() => ({ getReport: vi.fn() }));
+const reportActions = vi.hoisted(() => ({ getReport: vi.fn(), getDetailedReport: vi.fn(), getResidents: vi.fn() }));
 const rowMocks = vi.hoisted(() => ({ useRows: vi.fn() }));
 
 vi.mock('../actions', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../actions')>();
-  return { ...actual, getBillingV2FinancialReport: reportActions.getReport };
+  return { ...actual, getBillingV2FinancialReport: reportActions.getReport, getAdminBillingV2DetailedReport: reportActions.getDetailedReport, getAdminFinancialResidents: reportActions.getResidents };
 });
 
 vi.mock('../data', async (importOriginal) => {
@@ -95,6 +95,8 @@ function deferred<T>() {
 
 beforeEach(() => {
   reportActions.getReport.mockReset();
+  reportActions.getDetailedReport.mockReset();
+  reportActions.getResidents.mockReset();
   rowMocks.useRows.mockReset();
   rowMocks.useRows.mockImplementation((_session: Session, module: string) => ({
     rows: Array.from(
@@ -109,7 +111,113 @@ beforeEach(() => {
   }));
 });
 
+function detailedReport(communityId: string): DetailedFinancialReport {
+  return {
+    success: true as const, schemaVersion: 1 as const, communityId,
+    reportingPeriod: {fromMs: 0, toMs: 1, from: 'from', to: 'to'}, generatedAtMs: 1760000000000,
+    reportType: 'all' as const,
+    totals: {residentsCount: 2, billedMinor: 30000, paidMinor: 20000, creditAppliedMinor: 0, availableCreditMinor: 0, outstandingMinor: 10000},
+    rows: [
+      {residentId: 'active', identity: {name: 'Active Resident', phone: '+639171111111', unit: 'A-01', residentType: 'owner', deleted: false}, bills: [{billId: 'b1', description: 'Maintenance', billingPeriod: '2026-10', amountMinor: 10000, paidMinor: 5000, outstandingMinor: 5000, status: 'partially_paid', settlements: [{transactionId: 'tx1', amountMinor: 5000, receivedAmountMinor: 5000, method: 'cash', reference: 'CASH-1', receivedAtMs: 1760000000000, createdAtMs: 1760000000000}]}], payments: [], billedMinor: 10000, paidMinor: 5000, creditAppliedMinor: 0, availableCreditMinor: 0, outstandingMinor: 5000, paymentStatus: 'partially_paid'},
+      {residentId: 'deleted', identity: {name: 'Former Resident', phone: '+639172222222', unit: 'B-02', residentType: 'tenant', deleted: true}, bills: [], payments: [], billedMinor: 20000, paidMinor: 15000, creditAppliedMinor: 0, availableCreditMinor: 0, outstandingMinor: 5000, paymentStatus: 'partially_paid'},
+    ],
+  };
+}
+
 describe('ReportsPage Billing V2 financial report', () => {
+  it('requires an actual resident selection and sends its stable ID for same-name residents', async () => {
+    const session = makeSession('admin');
+    const report = detailedReport(session.community!.id);
+    report.rows[0].identity = {name: 'test acct 6', phone: '+919500000000', unit: 'P016', residentType: 'owner', deleted: false};
+    report.rows[1].identity = {name: 'test acct 6', phone: '+16505553436', unit: 'V015', residentType: 'owner', deleted: true};
+    reportActions.getReport.mockResolvedValue(financialReport(session.community!.id, currentLocalMonth()));
+    reportActions.getResidents.mockResolvedValue(report.rows.map(({residentId, identity}) => ({residentId, identity})));
+    reportActions.getDetailedReport.mockResolvedValue({...report, reportType: 'individual', rows: [report.rows[1]]});
+    renderReports(session);
+    expect(screen.getByRole('button', {name: 'Generate Report'})).toBeVisible();
+    expect(screen.queryByLabelText('Search resident')).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Report Type'), {target: {value: 'individual'}});
+    expect(screen.queryByRole('button', {name: 'Generate Report'})).not.toBeInTheDocument();
+    await screen.findByRole('option', {name: 'test acct 6 · +16505553436 · V015 · Deleted'});
+    fireEvent.change(screen.getByLabelText('Search resident'), {target: {value: 'test acct 6'}});
+    expect(within(screen.getByRole('listbox', {name: 'Residents'})).getAllByRole('option')).toHaveLength(2);
+    expect(screen.queryByRole('button', {name: 'Generate Report'})).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('option', {name: 'test acct 6 · +16505553436 · V015 · Deleted'}));
+    fireEvent.click(screen.getByRole('button', {name: 'Generate Report'}));
+    await waitFor(() => expect(reportActions.getDetailedReport).toHaveBeenCalledWith(session, {fromMs: 0, toMs: 253402300799999}, 'deleted'));
+    expect(await screen.findByRole('heading', {name: 'test acct 6 (Deleted)'})).toBeInTheDocument();
+  });
+  it('generates all-resident report and displays active and retained deleted identities and ledger totals', async () => {
+    const session = makeSession('admin');
+    reportActions.getReport.mockResolvedValue(financialReport(session.community!.id, currentLocalMonth()));
+    reportActions.getDetailedReport.mockResolvedValue(detailedReport(session.community!.id));
+    renderReports(session);
+    fireEvent.click(screen.getByRole('button', {name: 'Generate Report'}));
+    expect(await screen.findByRole('heading', {name: 'Former Resident (Deleted)'})).toBeInTheDocument();
+    expect(screen.getByRole('heading', {name: 'Active Resident (Active)'})).toBeInTheDocument();
+    const totals = within(screen.getByLabelText('Resident report totals'));
+    expect(totals.getByText('₹300.00')).toBeInTheDocument();
+    expect(totals.getByText('₹200.00')).toBeInTheDocument();
+    expect(totals.getByText('₹100.00')).toBeInTheDocument();
+    expect(screen.getByRole('cell', {name: 'cash / CASH-1'})).toBeInTheDocument();
+    expect(reportActions.getDetailedReport).toHaveBeenCalledWith(session, expect.objectContaining({fromMs: 0, toMs: 253402300799999}), undefined);
+  });
+
+  it('exports canonical resident totals and receipt timestamps for all residents and a selected deleted resident', async () => {
+    const session = makeSession('admin');
+    const response = detailedReport(session.community!.id);
+    // A retained resident can have no bills in the selected range and still
+    // have receipt activity and available credit that must survive export.
+    response.rows[1].payments = [{transactionId: 'old-bill-payment', amountMinor: 0, receivedAmountMinor: 18000, method: 'cash', reference: 'FORMER-RECEIPT', receivedAtMs: 1760000000000, createdAtMs: 1760000001000}];
+    response.rows[1].availableCreditMinor = 3000;
+    response.totals.availableCreditMinor = 3000;
+    reportActions.getReport.mockResolvedValue(financialReport(session.community!.id, currentLocalMonth()));
+    reportActions.getDetailedReport.mockResolvedValue(response);
+    reportActions.getResidents.mockResolvedValue(response.rows.map(({residentId, identity}) => ({residentId, identity})));
+    renderReports(session);
+    fireEvent.click(screen.getByRole('button', {name: 'Generate Report'}));
+    await screen.findByRole('heading', {name: 'Former Resident (Deleted)'});
+    const blobs: Blob[] = [];
+    const oldCreate = Object.getOwnPropertyDescriptor(URL, 'createObjectURL');
+    const oldRevoke = Object.getOwnPropertyDescriptor(URL, 'revokeObjectURL');
+    Object.defineProperty(URL, 'createObjectURL', {configurable: true, value: vi.fn((blob: Blob) => { blobs.push(blob); return 'blob:detailed'; })});
+    Object.defineProperty(URL, 'revokeObjectURL', {configurable: true, value: vi.fn()});
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    const readCsv = (blob: Blob) => new Promise<string>((resolve) => {
+      const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.readAsText(blob);
+    });
+    try {
+      fireEvent.click(screen.getByRole('button', {name: 'Export CSV'}));
+      const allCsv = await readCsv(blobs[0]);
+      expect(allCsv).toContain('"Total billed minor","30000"');
+      expect(allCsv).toContain('"Total paid minor","20000"');
+      expect(allCsv).toContain('"Outstanding minor","10000"');
+      expect(allCsv).toContain('"Former Resident","+639172222222","B-02","Deleted","20000","15000","0","3000","5000"');
+      expect(allCsv).toContain('"old-bill-payment","18000","cash","FORMER-RECEIPT","2025-10-09T08:53:20.000Z","2025-10-09T08:53:21.000Z"');
+      fireEvent.change(screen.getByLabelText('Report Type'), {target: {value: 'individual'}});
+      expect(screen.queryByRole('button', {name: 'Generate Report'})).not.toBeInTheDocument();
+      await screen.findByRole('option', {name: 'Former Resident · +639172222222 · B-02 · Deleted'});
+      fireEvent.change(screen.getByLabelText('Search resident'), {target: {value: 'Former'}});
+      expect(within(screen.getByRole('listbox', {name: 'Residents'})).getAllByRole('option')).toHaveLength(1);
+      fireEvent.click(screen.getByRole('option', {name: 'Former Resident · +639172222222 · B-02 · Deleted'}));
+      expect(screen.getByRole('button', {name: 'Generate Report'})).toBeEnabled();
+      fireEvent.click(screen.getByRole('button', {name: 'Generate Report'}));
+      await waitFor(() => expect(reportActions.getDetailedReport).toHaveBeenLastCalledWith(session, {fromMs: 0, toMs: 253402300799999}, 'deleted'));
+      expect(screen.queryByRole('heading', {name: 'Active Resident (Active)'})).not.toBeInTheDocument();
+      await screen.findByRole('heading', {name: 'Former Resident (Deleted)'});
+      fireEvent.click(screen.getByRole('button', {name: 'Export CSV'}));
+      const individualCsv = await readCsv(blobs[1]);
+      expect(individualCsv).toContain('"Total billed minor","20000"');
+      expect(individualCsv).toContain('"Total paid minor","15000"');
+      expect(individualCsv).toContain('"Available credit minor","3000"');
+      expect(individualCsv).toContain('FORMER-RECEIPT');
+      expect(individualCsv).not.toContain('Active Resident');
+    } finally {
+      if (oldCreate) Object.defineProperty(URL, 'createObjectURL', oldCreate); else Reflect.deleteProperty(URL, 'createObjectURL');
+      if (oldRevoke) Object.defineProperty(URL, 'revokeObjectURL', oldRevoke); else Reflect.deleteProperty(URL, 'revokeObjectURL');
+      click.mockRestore();
+    }
+  });
   it('adds operational analytics without deriving financial totals from bill rows', async () => {
     const session = makeSession('admin');
     reportActions.getReport.mockResolvedValue(

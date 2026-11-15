@@ -57,6 +57,21 @@ function mount(url = path('visitors'), overrides: Partial<AuthState> = {}) {
 }
 beforeEach(() => vi.clearAllMocks());
 describe('protected nested routes', () => {
+  if (APP_ROLE === 'admin') {
+    it('opens the dedicated inbox from navigation and the existing toolbar bell', async () => {
+      const { router } = mount('/notifications');
+      expect(
+        await screen.findByRole('heading', { name: 'Notifications', level: 1 }),
+      ).toBeInTheDocument();
+      expect(screen.getByText('You have no notifications in this community.')).toBeInTheDocument();
+      expect(screen.getAllByRole('link', { name: 'Notifications' }).length).toBeGreaterThan(1);
+      await act(() => router.navigate('/settings'));
+      fireEvent.click(await screen.findByRole('link', { name: 'Open notifications' }));
+      expect(
+        await screen.findByRole('heading', { name: 'Notifications', level: 1 }),
+      ).toBeInTheDocument();
+    });
+  }
   if (APP_ROLE === 'admin')
     it('uses Payments terminology on the existing payments route', async () => {
       mount('/payments');

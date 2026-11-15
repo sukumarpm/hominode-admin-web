@@ -1,0 +1,89 @@
+.visitor-policy {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.visitor-policy form,
+.visitor-policy fieldset {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.visitor-policy fieldset {
+  border: 1px solid var(--border, #dbe3e9);
+  border-radius: 12px;
+  padding: 16px;
+  margin: 0;
+}
+.visitor-policy p,
+.visitor-decision p {
+  overflow-wrap: anywhere;
+  margin: 6px 0;
+}
+.visitor-policy label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.visitor-policy select,
+.visitor-policy input {
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
+}
+.visitor-policy .visitor-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.visitor-check input {
+  width: auto;
+  flex: 0 0 auto;
+}
+.visitor-policy-dates {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.visitor-policy-summary {
+  min-width: 0;
+  border: 1px solid var(--border, #dbe3e9);
+  border-radius: 12px;
+  padding: 16px;
+}
+.visitor-policy-summary h3,
+.visitor-policy-summary dl {
+  margin: 0 0 8px;
+}
+.visitor-policy-summary dl > div {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+  gap: 12px;
+  margin: 8px 0;
+  overflow-wrap: anywhere;
+}
+.visitor-policy-summary dd {
+  margin: 0;
+}
+.visitor-queues {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 16px 0;
+}
+.visitor-queues button[aria-selected='true'] {
+  background: #0e4778;
+  color: white;
+}
+.visitor-decision {
+  min-width: 0;
+}
+.visitor-records .table-wrap {
+  /* Keep absolutely positioned accessible captions inside the table scroller. */
+  position: relative;
+}
+@media (max-width: 650px) {
+  .visitor-policy-dates {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

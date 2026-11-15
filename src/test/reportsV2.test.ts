@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
-import { getBillingV2FinancialReport, type BillingV2FinancialReport } from '../actions';
+import { getAdminBillingV2DetailedReport, getBillingV2FinancialReport, type BillingV2FinancialReport, type DetailedFinancialReport } from '../actions';
 import { makeSession } from './fixtures';
 
 function resolvedAuthority(session: ReturnType<typeof makeSession>) {
@@ -273,5 +273,38 @@ describe('Admin Web Billing V2 financial-report action contract', () => {
       expect(source).not.toContain(`collection('${collection}')`);
       expect(source).not.toContain(`collection("${collection}")`);
     }
+  });
+});
+
+describe('Admin Web detailed resident financial report action', () => {
+  const report: DetailedFinancialReport = {
+    success: true, schemaVersion: 1, communityId: 'community-1',
+    reportingPeriod: {fromMs: 100, toMs: 200, from: 'date-from', to: 'date-to'},
+    generatedAtMs: 1760000000000, reportType: 'all', rows: [],
+    totals: {residentsCount: 0, billedMinor: 0, paidMinor: 0, creditAppliedMinor: 0, availableCreditMinor: 0, outstandingMinor: 0},
+  };
+  it('sends the selected date range to the scoped Admin callable', async () => {
+    const session = makeSession('admin');
+    const invokeCall = vi.fn().mockResolvedValue(report);
+    const result = await getAdminBillingV2DetailedReport(session, {fromMs: 100, toMs: 200}, undefined, {
+      resolveAuthority: async () => resolvedAuthority(session), invokeCall,
+    });
+    expect(invokeCall).toHaveBeenCalledWith('getAdminBillingV2DetailedReport', {
+      communityId: 'community-1', fromMs: 100, toMs: 200,
+    });
+    expect(result.totals.billedMinor).toBe(0);
+  });
+  it('denies a non-admin and rejects a mismatched community response', async () => {
+    const residentSession = makeSession('resident');
+    const invokeCall = vi.fn();
+    await expect(getAdminBillingV2DetailedReport(residentSession, {fromMs: 100, toMs: 200}, undefined, {
+      resolveAuthority: async () => resolvedAuthority(residentSession), invokeCall,
+    })).rejects.toThrow('An administrator is required.');
+    expect(invokeCall).not.toHaveBeenCalled();
+
+    const admin = makeSession('admin');
+    await expect(getAdminBillingV2DetailedReport(admin, {fromMs: 100, toMs: 200}, undefined, {
+      resolveAuthority: async () => resolvedAuthority(admin), invokeCall: async () => ({...report, communityId: 'community-x'}),
+    })).rejects.toThrow('could not be validated');
   });
 });

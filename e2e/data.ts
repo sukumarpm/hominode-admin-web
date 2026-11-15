@@ -2,6 +2,11 @@ import { type Row, type Session } from '../src/models';
 export { safeUrl, titleOf } from '../src/data';
 export type { Resource, Module } from '../src/data';
 import { type Module, type Resource } from '../src/data';
+// These companion reads stay offline when the current app is loaded by the harness.
+const empty: Resource = { rows: [], loading: false, error: '' };
+export const useApartmentImages = () => empty;
+export const useAdminV2PaymentProofs = () => empty;
+export const useAdminV2RecurringSchedules = () => empty;
 const at = new Date('2026-09-02T10:24:00');
 export function useRows(s: Session, module: Module): Resource {
   const fixtures: Partial<Record<Module, Record<string, unknown>[]>> = {
@@ -16,6 +21,18 @@ export function useRows(s: Session, module: Module): Resource {
     ],
     visitors: [
       {
+        visitorName: 'Pending Policy Guest',
+        hostName: 'Policy Host',
+        flatLabel: 'N014',
+        purpose: 'Visit',
+        status: 'expected',
+        isApproved: false,
+        authorizationManaged: true,
+        authorizationState: 'pending_admin',
+        authorizationRevision: 7,
+        expectedArrival: at,
+      },
+      {
         visitorName: 'Rohit Sharma',
         purpose: 'Friend',
         flatLabel: 'Tower A · 1203',
@@ -26,6 +43,21 @@ export function useRows(s: Session, module: Module): Resource {
         purpose: 'House help',
         status: 'approved',
         flatLabel: 'Tower B · 804',
+      },
+      {
+        visitorName: 'Inside Policy Guest',
+        hostName: 'Policy Host',
+        flatLabel: 'N014',
+        status: 'inside',
+        isApproved: false,
+        actualArrival: at,
+        authorizationState: 'auto_authorized',
+      },
+      {
+        visitorName: 'Denied Policy Guest',
+        status: 'expected',
+        gateAccessStatus: 'denied',
+        flatLabel: 'N014',
       },
     ],
     complaints: [
@@ -85,6 +117,22 @@ export function useRows(s: Session, module: Module): Resource {
     ],
     notifications: [
       {
+        title: 'Security request: Registered phone number',
+        message:
+          'Officer One (+639170000001)\n\nPlease update my registered phone number so I can continue receiving OTPs.\n\nReference: HSP-AAAAAAAAAAAAAAAAAAAAAAAA',
+        metadata: {
+          eventType: 'security_support_request',
+          topic: 'phone_number',
+          reference: 'HSP-AAAAAAAAAAAAAAAAAAAAAAAA',
+        },
+        recipientId: s.uid,
+        audience: s.role,
+        role: s.role,
+        appId: s.role,
+        type: 'general',
+        isRead: false,
+      },
+      {
         title: 'New visitor request',
         body: 'A visitor is waiting for approval.',
         status: 'pending',
@@ -112,6 +160,8 @@ export function useRows(s: Session, module: Module): Resource {
     id: module + '-' + i,
     data: { communityId: s.community?.id, createdAt: at, updatedAt: at, ...d },
   }));
+  if (module === 'visitors' && new URLSearchParams(location.search).get('state') === 'empty')
+    return empty;
   if (new URLSearchParams(location.search).get('state') === 'error')
     return {
       rows: [],

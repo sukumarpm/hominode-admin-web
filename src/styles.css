@@ -1666,8 +1666,8 @@ dialog::backdrop {
 }
 
 .report-kpi-list .report-highlight {
-  background: linear-gradient(120deg, rgba(14,71,120,0.10), rgba(58,166,200,0.12));
-  border-color: rgba(58,166,200,0.30);
+  background: linear-gradient(120deg, rgba(14, 71, 120, 0.1), rgba(58, 166, 200, 0.12));
+  border-color: rgba(58, 166, 200, 0.3);
 }
 
 .report-kpi-list .report-highlight span,
@@ -5434,6 +5434,30 @@ dialog.payment-details-dialog .payment-review-controls textarea {
   color: #14274b;
 }
 
+.financial-report-residents {
+  display: grid;
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.financial-report-residents button {
+  padding: 12px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: #14274b;
+  text-align: left;
+  cursor: pointer;
+}
+
+.financial-report-residents button:hover,
+.financial-report-residents button:focus-visible {
+  background: #eef4fa;
+}
+
 .financial-report-export {
   min-height: 42px;
   white-space: nowrap;
@@ -5959,3 +5983,141 @@ img.avatar {
   background: #fff1f2;
   color: #991b1b;
 }
+.account-deletion-page {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: clamp(16px, 3vw, 32px);
+}
+.account-deletion-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 24px;
+}
+.account-deletion-heading h1 {
+  margin: 4px 0 8px;
+}
+.account-deletion-heading p {
+  max-width: 720px;
+}
+.account-deletion-list {
+  display: grid;
+  gap: 14px;
+}
+.account-deletion-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 20px;
+  padding: 20px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #dce3eb);
+  border-radius: 14px;
+}
+.account-deletion-card h2 {
+  margin: 0 0 12px;
+  font-size: 1.05rem;
+  overflow-wrap: anywhere;
+}
+.account-deletion-card dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  gap: 12px 20px;
+  margin: 0;
+}
+.account-deletion-card dt {
+  color: var(--muted, #68778a);
+  font-size: 0.82rem;
+}
+.account-deletion-card dd {
+  margin: 3px 0 0;
+  font-weight: 600;
+}
+.account-deletion-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.account-deletion-page .muted {
+  color: var(--muted, #68778a);
+  font-size: 0.9rem;
+}
+.account-deletion-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: #07152699;
+}
+.account-deletion-dialog {
+  width: min(100%, 620px);
+  max-height: min(90vh, 820px);
+  overflow: auto;
+  padding: 24px;
+  background: var(--surface, #fff);
+  border-radius: 16px;
+  box-shadow: 0 20px 70px #07152640;
+}
+.account-deletion-dialog label {
+  display: grid;
+  gap: 7px;
+  margin: 14px 0;
+  font-weight: 600;
+}
+.account-deletion-dialog select,
+.account-deletion-dialog textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #dce3eb);
+  border-radius: 8px;
+  font: inherit;
+}
+.account-deletion-dialog textarea {
+  resize: vertical;
+}
+.account-deletion-dialog .account-deletion-actions {
+  margin-top: 18px;
+}
+.success-state {
+  color: #13764b;
+}
+@media (max-width: 700px) {
+  .account-deletion-heading,
+  .account-deletion-card {
+    flex-direction: column;
+  }
+  .account-deletion-card dl {
+    grid-template-columns: 1fr;
+  }
+  .account-deletion-actions {
+    justify-content: flex-start;
+  }
+}
+
+/* Content moderation only. */
+.moderation-console .moderation-section-heading {display:flex; align-items:center; justify-content:space-between; gap:1rem; margin:1.5rem 0 1rem;}
+.moderation-console .moderation-section-heading h3 {margin:0;}
+.moderation-console .moderation-section-heading > span, .moderation-console .moderation-meta {color:var(--muted, #64748b); font-size:.875rem;}
+.moderation-console .moderation-grid {display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,360px),1fr)); gap:1rem;}
+.moderation-console .moderation-card {min-width:0; margin:0; padding:1.25rem;}
+.moderation-console .moderation-card-heading {display:flex; align-items:center; justify-content:space-between; gap:.75rem;}
+.moderation-console .moderation-card h4 {margin:0;}
+.moderation-console blockquote {margin:1rem 0; padding:1rem; border-left:3px solid #cbd5e1; background:#f8fafc; white-space:pre-wrap; overflow-wrap:anywhere; max-height:12rem; overflow:auto;}
+.moderation-console .moderation-card p {overflow-wrap:anywhere; white-space:pre-wrap;}
+.moderation-console .moderation-status {border-radius:999px; padding:.25rem .65rem; font-size:.8rem; font-weight:600; background:#fff7df; color:#805b00;}
+.moderation-console .moderation-status.hidden {background:#fff0f0; color:#a52a2a;}
+.moderation-console .moderation-status.dismissed {background:#eaf7ef; color:#236342;}
+.moderation-console .moderation-empty {padding:1.5rem; background:#f8fafc; border:1px dashed #cbd5e1; border-radius:12px;}
+
+/* Assisted intake uses the existing deletion dialog and responsive layout. */
+.account-deletion-dialog input:not([type="checkbox"]) {
+  width: 100%; padding: 10px 12px; border: 1px solid var(--border, #dce3eb);
+  border-radius: 8px; font: inherit; box-sizing: border-box;
+}
+.account-deletion-dialog .assisted-check { display: flex; align-items: flex-start; font-weight: 400; }
+.assisted-check input { margin-top: 4px; flex-shrink: 0; }
+.assisted-details { overflow-wrap: anywhere; }

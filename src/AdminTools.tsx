@@ -1,5 +1,5 @@
 import { Plus, Upload } from 'lucide-react';
-import { useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { currentAuthority } from './actions';
 import { Modal, Pill } from './components';
 import { PhoneNumberInput } from './components/PhoneNumberInput';
@@ -8,6 +8,8 @@ import { safeUrl, useRows } from './data';
 import { call } from './firebase';
 import { str, type Data, type Row, type Session } from './models';
 import { phoneCountries } from './utils/phone';
+import { isResidentUnitAvailable, residentUnitLabel } from './residentUnitOptions';
+import { canApproveRegistration, canRejectRegistration } from './registrationLifecycle';
 interface ImportResult {
   rows: Data[];
   summary: { validRows?: number; errorRows?: number; successCount?: number; failedCount?: number };
@@ -39,7 +41,9 @@ export function AdminCreateButtons({ s, module }: { s: Session; module: string }
       {open === 'bulk' ? (
         <BulkImport s={s} onClose={() => setOpen(null)} />
       ) : (
-        open && <CreateRecord s={s} kind={open} onClose={() => setOpen(null)} />
+        open && (
+          <CreateRecord key={s.community?.id} s={s} kind={open} onClose={() => setOpen(null)} />
+        )
       )}
     </>
   );
@@ -65,36 +69,42 @@ function CreateRecord({
     [result, setResult] = useState(''),
     [structure, setStructure] = useState('apartment_building'),
     [buildingId, setBuildingId] = useState(''),
-    [flatId, setFlatId] = useState('');
+    [flatId, setFlatId] = useState(''),
+    [unitSearch, setUnitSearch] = useState('');
 
   const buildings = useRows(s, 'buildings');
   const units = useRows(s, 'units');
 
   const buildingRows = buildings.rows
+    .filter((row) => row.data.communityId === s.community?.id && row.data.isActive !== false)
     .map((row) => ({
       id: row.id,
       name: str(row.data.buildingName) || str(row.data.name) || row.id,
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
-  const unitsForBuilding = units.rows
-    .filter((row) => str(row.data.buildingId) === buildingId)
+  const eligibleUnits = units.rows
+    .filter(
+      (row) =>
+        row.data.communityId === s.community?.id &&
+        buildingRows.some((building) => building.id === str(row.data.buildingId)) &&
+        isResidentUnitAvailable(row.data),
+    )
     .map((row) => ({
       id: row.id,
-      label:
-        str(row.data.flatLabel) ||
-        str(row.data.unitLabel) ||
-        str(row.data.flatNumber) ||
-        str(row.data.unitId) ||
-        row.id,
-      status: str(row.data.status).toLowerCase(),
+      buildingId: str(row.data.buildingId),
+      buildingName: buildingRows.find((building) => building.id === str(row.data.buildingId))!.name,
+      label: residentUnitLabel(row.data, row.id),
     }))
-    .sort((a, b) =>
-      a.label.localeCompare(b.label, undefined, {
-        numeric: true,
-        sensitivity: 'base',
-      }),
+    .sort(
+      (a, b) =>
+        a.buildingName.localeCompare(b.buildingName) ||
+        a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' }),
     );
+  const unitsForBuilding = eligibleUnits.filter((unit) => unit.buildingId === buildingId);
+  const searchMatches = eligibleUnits.filter((unit) =>
+    unit.label.toLowerCase().includes(unitSearch.trim().toLowerCase()),
+  );
 
   const selectedBuildingName =
     buildingRows.find((building) => building.id === buildingId)?.name || '';
@@ -118,7 +128,7 @@ function CreateRecord({
 
         const selectedUnit = unitsForBuilding.find((unit) => unit.id === flatId);
 
-        if (!selectedUnit || selectedUnit.status !== 'vacant') {
+        if (!selectedUnit || units.loading || buildings.loading || units.error || buildings.error) {
           throw Error('The selected unit is no longer available.');
         }
 
@@ -231,14 +241,16 @@ function CreateRecord({
                     required
                   >
                     <option value="">
-                      {buildings.loading ? 'Loading buildings…' : 'Select building'}
+                      {buildings.loading
+                        ? 'Loading buildings…'
+                        : buildingRows.length
+                          ? 'Select building'
+                          : 'No buildings available'}
                     </option>
 
                     {buildingRows.map((building) => {
-                      const vacantCount = units.rows.filter(
-                        (row) =>
-                          str(row.data.buildingId) === building.id &&
-                          str(row.data.status).toLowerCase() === 'vacant',
+                      const vacantCount = eligibleUnits.filter(
+                        (unit) => unit.buildingId === building.id,
                       ).length;
 
                       return (
@@ -263,16 +275,60 @@ function CreateRecord({
                         ? 'Select a building first'
                         : units.loading
                           ? 'Loading units…'
-                          : 'Select unit'}
+                          : unitsForBuilding.length
+                            ? 'Select unit'
+                            : 'No eligible units in this building'}
                     </option>
 
                     {unitsForBuilding.map((unit) => (
-                      <option key={unit.id} value={unit.id} disabled={unit.status !== 'vacant'}>
-                        {unit.label} — {unit.status || 'unavailable'}
+                      <option key={unit.id} value={unit.id}>
+                        {unit.label}
                       </option>
                     ))}
                   </select>
                 </label>
+
+                <label>
+                  Search units across all buildings
+                  <input
+                    type="search"
+                    value={unitSearch}
+                    placeholder="Enter a unit number or label"
+                    disabled={
+                      units.loading ||
+                      buildings.loading ||
+                      !!units.error ||
+                      !!buildings.error ||
+                      !eligibleUnits.length
+                    }
+                    onChange={(e) => setUnitSearch(e.target.value)}
+                  />
+                </label>
+                {unitSearch.trim() &&
+                  (searchMatches.length ? (
+                    <div
+                      role="group"
+                      aria-label="Matching units"
+                      style={{ maxHeight: 220, overflowY: 'auto' }}
+                    >
+                      {searchMatches.map((unit) => (
+                        <button
+                          key={unit.id}
+                          type="button"
+                          className="outline-link"
+                          onClick={() => {
+                            setBuildingId(unit.buildingId);
+                            setFlatId(unit.id);
+                            setUnitSearch('');
+                          }}
+                        >
+                          {unit.buildingName} · {unit.label}
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <p role="status">No matching eligible units</p>
+                  ))}
 
                 {buildings.error && <p className="form-message">{buildings.error}</p>}
 
@@ -448,32 +504,94 @@ export function ResidentReview({ s, row }: { s: Session; row: Row }) {
     units = useRows(s, 'units');
   const [buildingId, setBuilding] = useState(str(row.data.buildingId)),
     [flatId, setFlat] = useState(str(row.data.flatId)),
-    [type, setType] = useState(str(row.data.residentType) || 'owner'),
+    [type, setType] = useState(
+      str(row.data.residentType) ||
+        str(row.data.declaredResidentType) ||
+        str(row.data.ownershipType) ||
+        'owner',
+    ),
     [message, setMessage] = useState(''),
     [busy, setBusy] = useState(false),
     [reason, setReason] = useState(''),
-    [proof, setProof] = useState('');
+    [proof, setProof] = useState(''),
+    [confirmReject, setConfirmReject] = useState(false),
+    [hasError, setHasError] = useState(false),
+    [registrationDone, setRegistrationDone] = useState(false);
+  const inFlight = useRef(false);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const scoped =
+    s.role === 'admin' &&
+    !!s.community &&
+    row.data.communityId === s.community.id &&
+    row.data.role === 'resident';
+  const pending = scoped && !registrationDone && canApproveRegistration(row.data);
+  const rejectable =
+    scoped &&
+    !registrationDone &&
+    canRejectRegistration(row.data, s.community?.ownerIdentityVerificationRequired === true);
+  const pendingRef = useRef(pending);
+  const rejectableRef = useRef(rejectable);
+  pendingRef.current = pending;
+  rejectableRef.current = rejectable;
   async function run(name: string, data: Data = {}) {
+    if (inFlight.current || !scoped) return;
+    const registrationAction = [
+      'approveResidentRegistration',
+      'rejectResidentRegistration',
+    ].includes(name);
+    if (
+      registrationAction &&
+      !(name === 'rejectResidentRegistration' ? rejectableRef.current : pendingRef.current)
+    )
+      return;
+    inFlight.current = true;
     setBusy(true);
+    setHasError(false);
     setMessage('');
     try {
       await currentAuthority(s);
+      if (
+        !mounted.current ||
+        (registrationAction &&
+          !(name === 'rejectResidentRegistration' ? rejectableRef.current : pendingRef.current))
+      )
+        return;
       const result = await call<{ url?: string }>(name, {
         communityId: s.community!.id,
         userId: row.id,
         ...data,
       });
+      if (!mounted.current) return;
       if (name === 'getResidentIdentityProofUrl') {
         const url = safeUrl(result.url);
         if (!url) throw Error('Identity proof is unavailable.');
         setProof(url);
-      } else setMessage('Resident record updated.');
+      } else if (registrationAction) {
+        setRegistrationDone(true);
+        setConfirmReject(false);
+        setMessage(
+          name === 'rejectResidentRegistration'
+            ? 'Registration rejected.'
+            : 'Registration approved.',
+        );
+      } else setMessage('Identity proof review updated.');
     } catch (e) {
-      setMessage(e instanceof Error ? e.message : 'Unable to update resident.');
+      if (mounted.current) {
+        setHasError(true);
+        setMessage(e instanceof Error ? e.message : 'Unable to update resident.');
+      }
     } finally {
-      setBusy(false);
+      inFlight.current = false;
+      if (mounted.current) setBusy(false);
     }
   }
+  if (!scoped) return null;
   return (
     <section className="resident-review">
       <h3>Registration & Identity</h3>
@@ -508,10 +626,10 @@ export function ResidentReview({ s, row }: { s: Session; row: Row }) {
               })
             }
           >
-            Reject identity
+            Reject Identity Proof
           </button>
         </div>
-        {row.data.approvalStatus === 'pending' && (
+        {pending && (
           <>
             <label>
               Building
@@ -557,18 +675,62 @@ export function ResidentReview({ s, row }: { s: Session; row: Row }) {
                 void run('approveResidentRegistration', { buildingId, flatId, residentType: type })
               }
             >
-              Approve registration
-            </button>
-            <button
-              disabled={busy || !reason.trim()}
-              onClick={() => void run('rejectResidentRegistration', { reason: reason.trim() })}
-            >
-              Reject registration
+              Approve Registration
             </button>
           </>
         )}
+        {rejectable && (
+          <button
+            disabled={busy}
+            onClick={() => {
+              setMessage('');
+              setHasError(false);
+              setConfirmReject(true);
+            }}
+          >
+            Reject Registration
+          </button>
+        )}
       </fieldset>
-      {message && <p role="status">{message}</p>}
+      {busy && !confirmReject && <p role="status">Processing review…</p>}
+      {message && !confirmReject && <p role={hasError ? 'alert' : 'status'}>{message}</p>}
+      {confirmReject && rejectable && (
+        <Modal
+          title="Reject Registration"
+          onClose={(event?: { preventDefault(): void }) => {
+            if (inFlight.current) {
+              event?.preventDefault();
+              return;
+            }
+            setConfirmReject(false);
+          }}
+        >
+          <p>
+            This cancels onboarding and finally rejects the registration. Only this Resident’s
+            applicable unit allocation will be released. Rejecting identity proof instead allows
+            resubmission.
+          </p>
+          <label>
+            Rejection reason (optional)
+            <textarea value={reason} disabled={busy} onChange={(e) => setReason(e.target.value)} />
+          </label>
+          {busy && <p role="status">Processing registration…</p>}
+          {hasError && message && <p role="alert">{message}</p>}
+          <button type="button" disabled={busy} onClick={() => setConfirmReject(false)}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="primary"
+            disabled={busy}
+            onClick={() =>
+              void run('rejectResidentRegistration', { reason: reason.trim() || null })
+            }
+          >
+            Confirm Reject Registration
+          </button>
+        </Modal>
+      )}
     </section>
   );
 }

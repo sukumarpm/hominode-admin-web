@@ -15,6 +15,7 @@ import {
   setFacilityAvailability,
   submitProof,
   updateFacility,
+  updateScoped,
   uploadFacilityImages,
 } from '../actions';
 import { type CreateFacilityInput, type Data, type UpdateFacilityInput } from '../models';
@@ -592,7 +593,12 @@ it('creates complaints with canonical ownership and pending status', async () =>
 });
 it('creates visitor invitations through the protected callable without client credentials', async () => {
   m.call.mockResolvedValue({ visitorId: 'visitor-1' });
-  await createVisitor(makeSession(), {
+  const session = makeSession();
+  session.community = { ...session.community!, data: { ...session.community!.data, timeZone: 'Asia/Manila' } };
+  m.get.mockImplementation(async (path: string) => ({ data: () =>
+    path.startsWith('communities/') ? { ...session.community!.data, name: 'Green Valley',
+      slug: 'green-valley', isActive: true } : m.profile }));
+  await createVisitor(session, {
     visitorName: 'Test Visitor',
     purpose: 'Friend',
     expectedArrival: '2099-09-09T12:00',
@@ -600,7 +606,7 @@ it('creates visitor invitations through the protected callable without client cr
   expect(m.call).toHaveBeenCalledWith('createVisitorInvitation', expect.objectContaining({
     visitorName: 'Test Visitor',
     purpose: 'Friend',
-    expectedArrival: new Date('2099-09-09T12:00').getTime(),
+    expectedArrival: Date.parse('2099-09-09T04:00:00Z'),
   }));
   const request = m.call.mock.calls[0][1];
   expect(request).not.toHaveProperty('qrToken');
@@ -608,6 +614,14 @@ it('creates visitor invitations through the protected callable without client cr
   expect(request).not.toHaveProperty('communityId');
   expect(request).not.toHaveProperty('flatId');
   expect(m.add).not.toHaveBeenCalledWith('visitors', expect.anything());
+});
+it('blocks legacy visitor direct writes before Firestore access', async () => {
+  await expect(updateScoped(makeSession('admin'), 'visitors', 'visitor-1', {
+    status: 'approved', isApproved: true, authorizationState: 'admin_authorized',
+    qrToken: 'forged', visitorPassCode: 'FORGED',
+  })).rejects.toThrow(/decideVisitorInvitation/);
+  expect(m.get).not.toHaveBeenCalled();
+  expect(m.update).not.toHaveBeenCalled();
 });
 it('refuses stale unit assignments before writing', async () => {
   m.profile = { ...residentData, flatId: 'different-unit' };
@@ -1194,5 +1208,62 @@ describe('facility writes', () => {
       setFacilityAvailability(makeSession('admin'), 'facility-1', 'false' as unknown as boolean),
     ).rejects.toThrow('boolean');
     expect(m.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('recipient-scoped notification updates', () => {
+  function notificationRecord(overrides: Data = {}) {
+    m.get.mockImplementation(async (path: string) => ({
+      data: () =>
+        path.startsWith('communities/')
+          ? { name: 'Green Valley', slug: 'green-valley', isActive: true }
+          : path.startsWith('notifications/')
+            ? { communityId: 'community-1', recipientId: 'admin-1', ...overrides }
+            : m.profile,
+    }));
+  }
+
+  it('revalidates authenticated identity and writes only read-state fields', async () => {
+    const s = adminPaymentSession();
+    notificationRecord();
+    await updateScoped(s, 'notifications', 'support-1', {
+      recipientId: 'admin-2',
+      message: 'forged',
+    });
+    expect(m.get).toHaveBeenCalledWith('admins/admin-1');
+    expect(m.get).toHaveBeenCalledWith('notifications/support-1');
+    expect(m.update).toHaveBeenCalledExactlyOnceWith('notifications/support-1', {
+      isRead: true,
+      readAt: 'SERVER_TIMESTAMP',
+      updatedAt: 'SERVER_TIMESTAMP',
+    });
+  });
+
+  it.each([
+    [{ recipientId: 'admin-2' }, 'Notification access denied'],
+    [{ communityId: 'community-2' }, 'outside your community'],
+  ])('rejects foreign notification records: %s', async (overrides, expected) => {
+    const s = adminPaymentSession();
+    notificationRecord(overrides);
+    await expect(updateScoped(s, 'notifications', 'support-1', {})).rejects.toThrow(expected);
+    expect(m.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects a client-supplied identity that does not match Firebase Auth', async () => {
+    const s = adminPaymentSession();
+    notificationRecord();
+    await expect(
+      updateScoped({ ...s, uid: 'admin-2' }, 'notifications', 'support-1', {}),
+    ).rejects.toThrow('Sign in again');
+    expect(m.update).not.toHaveBeenCalled();
+  });
+
+  it('propagates failed writes without confirming success', async () => {
+    const s = adminPaymentSession();
+    notificationRecord();
+    m.update.mockRejectedValueOnce(Error('permission-denied'));
+    await expect(updateScoped(s, 'notifications', 'support-1', {})).rejects.toThrow(
+      'permission-denied',
+    );
   });
 });

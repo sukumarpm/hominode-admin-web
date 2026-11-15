@@ -1,3 +1,4 @@
+import { scheduleInstant, localSchedule, communityZone } from './visitorPolicy';
 import {
   addDoc,
   collection,
@@ -1481,6 +1482,86 @@ export async function getBillingV2FinancialReport(
   return report;
 }
 
+export interface DetailedFinancialReportRow {
+  residentId: string;
+  identity: { name: string; phone: string; unit: string; residentType: string; deleted: boolean; completedAtMs?: number | null };
+  bills: Array<{ billId: string; description: string; billingPeriod: string; amountMinor: number; paidMinor: number; outstandingMinor: number; status: string; settlements: Array<{ transactionId: string; amountMinor: number; receivedAmountMinor: number; method: string; reference: string | null; receivedAtMs: number; createdAtMs: number }> }>;
+  payments: Array<{ transactionId: string; amountMinor: number; receivedAmountMinor: number; method: string; reference: string | null; receivedAtMs: number; createdAtMs: number }>;
+  billedMinor: number;
+  paidMinor: number;
+  creditAppliedMinor: number;
+  availableCreditMinor: number;
+  outstandingMinor: number;
+  paymentStatus: string;
+}
+
+export interface DetailedFinancialReport {
+  success: true;
+  schemaVersion: 1;
+  communityId: string;
+  reportingPeriod: { fromMs: number; toMs: number; from: string; to: string };
+  generatedAtMs: number;
+  reportType: 'all' | 'individual';
+  coverageWarnings?: string[];
+  rows: DetailedFinancialReportRow[];
+  totals: { residentsCount: number; billedMinor: number; paidMinor: number; creditAppliedMinor: number; availableCreditMinor: number; outstandingMinor: number };
+}
+
+export async function getAdminBillingV2DetailedReport(
+  session: Session,
+  range: { fromMs: number; toMs: number },
+  residentId?: string,
+  dependencies: {
+    resolveAuthority?: typeof currentAuthority;
+    invokeCall?: (name: string, payload: { communityId: string; fromMs: number; toMs: number; residentId?: string }) => Promise<unknown>;
+  } = {},
+): Promise<DetailedFinancialReport> {
+  const s = await (dependencies.resolveAuthority || currentAuthority)(session);
+  if (s.role !== 'admin' || s.profile.role !== 'admin') throw Error('An administrator is required.');
+  if (!s.community || !s.profile.authorizedCommunityIds.includes(s.community.id)) throw Error('Select an authorized community.');
+  if (!Number.isSafeInteger(range.fromMs) || !Number.isSafeInteger(range.toMs) || range.fromMs < 0 || range.toMs < range.fromMs || range.toMs > 253402300799999) throw Error('Choose a valid date range.');
+  const payload = { communityId: s.community.id, ...range, ...(residentId ? { residentId } : {}) };
+  let raw: unknown;
+  try { raw = await (dependencies.invokeCall || ((name, data) => call(name, data)))('getAdminBillingV2DetailedReport', payload); }
+  catch { throw Error('Financial report request failed.'); }
+  const root = reportRecord(raw);
+  const totals = reportRecord(root?.totals);
+  const period = reportRecord(root?.reportingPeriod);
+  if (root?.success !== true || root.schemaVersion !== 1 || root.communityId !== s.community.id ||
+      root.reportType !== (residentId ? 'individual' : 'all') || !Array.isArray(root.rows) || !totals || !period ||
+      period.fromMs !== range.fromMs || period.toMs !== range.toMs ||
+      !nonNegativeSafeInteger(root.generatedAtMs) || !nonNegativeSafeInteger(totals.residentsCount) ||
+      !nonNegativeSafeInteger(totals.billedMinor) || !nonNegativeSafeInteger(totals.paidMinor) ||
+      !nonNegativeSafeInteger(totals.creditAppliedMinor) || !nonNegativeSafeInteger(totals.availableCreditMinor) ||
+      !nonNegativeSafeInteger(totals.outstandingMinor)) throw Error('The detailed financial report could not be validated.');
+  const rows = root.rows as unknown as DetailedFinancialReportRow[];
+  for (const row of rows) {
+    if (!row || typeof row.residentId !== 'string' || !row.identity || typeof row.identity.name !== 'string' ||
+        typeof row.identity.phone !== 'string' || typeof row.identity.unit !== 'string' || typeof row.identity.deleted !== 'boolean' ||
+        !Array.isArray(row.bills) || !Array.isArray(row.payments) || !nonNegativeSafeInteger(row.billedMinor) ||
+        !nonNegativeSafeInteger(row.paidMinor) || !nonNegativeSafeInteger(row.outstandingMinor)) throw Error('The detailed financial report could not be validated.');
+  }
+  return raw as DetailedFinancialReport;
+}
+
+export async function getAdminFinancialResidents(session: Session): Promise<Array<Pick<DetailedFinancialReportRow, 'residentId' | 'identity'>>> {
+  const s = await currentAuthority(session);
+  if (s.role !== 'admin' || s.profile.role !== 'admin') throw Error('An administrator is required.');
+  if (!s.community || !s.profile.authorizedCommunityIds.includes(s.community.id)) throw Error('Select an authorized community.');
+  let raw: unknown;
+  try { raw = await call('getAdminBillingV2DetailedReport', {communityId: s.community.id, fromMs: 0, toMs: 253402300799999, listResidents: true}); }
+  catch { throw Error('Resident list is unavailable.'); }
+  const root = reportRecord(raw);
+  if (root?.success !== true || root.schemaVersion !== 1 || root.communityId !== s.community.id || !Array.isArray(root.residents)) throw Error('Resident list could not be validated.');
+  for (const item of root.residents) {
+    const row = reportRecord(item), identity = reportRecord(row?.identity);
+    if (typeof row?.residentId !== 'string' || !row.residentId || !identity ||
+        typeof identity.name !== 'string' || typeof identity.phone !== 'string' || typeof identity.unit !== 'string' ||
+        typeof identity.deleted !== 'boolean') throw Error('Resident list could not be validated.');
+  }
+  return root.residents as Array<Pick<DetailedFinancialReportRow, 'residentId' | 'identity'>>;
+}
+
 function required(v: string, label: string) {
   if (!v.trim()) throw Error(label + ' is required.');
   return v.trim();
@@ -1917,10 +1998,12 @@ export async function createComplaint(session: Session, values: Record<string, s
 export async function createVisitor(session: Session, v: Record<string, string>) {
   const s = await currentAuthority(session);
   if (s.role !== 'resident') throw Error('A resident account is required.');
-  const arrival = new Date(v.expectedArrival);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  if (!Number.isFinite(arrival.getTime()) || arrival < today)
+  const zone = communityZone(s.community.data.timeZone);
+  if (zone !== communityZone(session.community?.data.timeZone))
+    throw Error('Your community timezone changed. Reload the invitation form.');
+  const arrival = new Date(scheduleInstant(v.expectedArrival, zone));
+  const today = localSchedule(Date.now(), zone).slice(0, 10);
+  if (!Number.isFinite(arrival.getTime()) || localSchedule(arrival.getTime(), zone).slice(0, 10) < today)
     throw Error('Choose a valid arrival date from today onwards.');
   return call<{ visitorId: string }>('createVisitorInvitation', {
     visitorName: required(v.visitorName, 'Visitor name'),
@@ -1936,6 +2019,8 @@ export async function updateScoped(
   id: string,
   fields: Data,
 ) {
+  if (collectionName === 'visitors')
+    throw Error('Visitor authorization must use decideVisitorInvitation. Reload the Visitors screen.');
   const s = await currentAuthority(session);
   const record = doc(firebase().db, collectionName, id);
   const data = (await getDocFromServer(record)).data();

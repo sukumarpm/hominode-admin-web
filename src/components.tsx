@@ -74,11 +74,13 @@ export function Modal({
   children,
   onClose,
   className,
+  dismissible = true,
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
   className?: string;
+  dismissible?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const id = useId();
@@ -88,10 +90,23 @@ export function Modal({
     return () => el?.close();
   }, []);
   return (
-    <dialog ref={ref} aria-labelledby={id} onCancel={onClose} className={className}>
+    <dialog
+      ref={ref}
+      aria-labelledby={id}
+      onCancel={(event) => {
+        if (!dismissible) event.preventDefault();
+        else onClose();
+      }}
+      className={className}
+    >
       <header className="dialog-heading">
         <h2 id={id}>{title}</h2>
-        <button className="icon-button" aria-label="Close dialog" onClick={onClose}>
+        <button
+          className="icon-button"
+          aria-label="Close dialog"
+          onClick={onClose}
+          disabled={!dismissible}
+        >
           <X />
         </button>
       </header>

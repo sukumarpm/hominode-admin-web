@@ -1,6 +1,7 @@
+import { communityDate, communityTimeLabel } from './visitorPolicy';
+import { ModerationQueue } from './ModerationQueue';
 import { ProfilePhoto } from './privateImages';
 import { CommunityPhotoManager } from './CommunityPhotoManager';
-import { serverTimestamp } from 'firebase/firestore';
 import {
   ArrowRight,
   Building2,
@@ -25,6 +26,8 @@ import {
   createVisitor,
   currentAuthority,
   getBillingV2FinancialReport,
+  getAdminBillingV2DetailedReport,
+  getAdminFinancialResidents,
   publishNotice,
   receiptBlob,
   removeEventImage,
@@ -35,6 +38,7 @@ import {
   updateScoped,
   uploadEventImages,
   type BillingV2FinancialReport,
+  type DetailedFinancialReport,
 } from './actions';
 import { AdminCreateButtons, ResidentReview } from './AdminTools';
 import { BillingCreateModal } from './BillingCreateModal';
@@ -85,7 +89,9 @@ import {
 import { useAuth } from './session';
 import { canUseFeature } from './subscription';
 import { useSubscription } from './subscriptionContext';
-import { adminVisitorApprovalPatch, adminVisitorRejectionPatch } from './visitorTransitions';
+import { VisitorPolicySettings } from './VisitorPolicySettings';
+import { VisitorDecisionActions } from './VisitorDecisionActions';
+import { authorizationLabel, visitorQueue, visitorQueueNames, visitorPhysicalLabel, type VisitorQueue } from './visitorPolicy';
 export const labels: Record<Module, string> = {
   residents: 'Residents',
   buildings: 'Buildings',
@@ -144,6 +150,7 @@ const details: Record<string, string> = {
   identityVerificationStatus: 'Identity verification',
   purpose: 'Purpose',
   expectedArrival: 'Expected arrival',
+  expectedTime: 'Expected arrival',
   actualArrival: 'Arrival',
   departure: 'Departure',
   visitorPassCode: 'Visitor pass',
@@ -184,11 +191,13 @@ function descriptionValue(key: string, value: unknown) {
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
   return typeof value === 'string' || typeof value === 'number' ? String(value) : '';
 }
-export function DetailFields({ data }: { data: Data }) {
+export function DetailFields({ data, visitorZone }: { data: Data; visitorZone?: unknown }) {
   return (
     <dl className="detail-fields">
       {Object.entries(details).map(([key, label]) => {
-        const value = descriptionValue(key, data[key]);
+        if (visitorZone !== undefined && key === 'expectedTime' && data.expectedArrival != null) return null;
+        const value = visitorZone !== undefined && /At$|Date$|Arrival$|Time$|^departure$/.test(key)
+          ? communityDate(data[key], visitorZone) : descriptionValue(key, data[key]);
         return value && value !== '—' ? (
           <div key={key}>
             <dt>{label}</dt>
@@ -277,6 +286,9 @@ function canCreate(s: Session, m: Module) {
   );
 }
 function moduleStatus(module: Module, data: Data) {
+  if (module === 'visitors') {
+    return visitorPhysicalLabel(data);
+  }
   if (module === 'billing' && isV2Bill(data)) {
     const classification = classifyV2Bill(data);
     if (classification === 'history') return 'settled';
@@ -503,6 +515,7 @@ function ScopedModule({
     [sortBy, setSortBy] = useState('name'),
     [page, setPage] = useState(0);
   const [createRecurringOpen, setCreateRecurringOpen] = useState(false);
+  const [visitorTab, setVisitorTab] = useState<VisitorQueue>('expected');
   const [params, setParams] = useSearchParams();
   const { entitlement } = useSubscription();
 
@@ -560,6 +573,7 @@ function ScopedModule({
     .filter(
       (r) =>
         (filter === 'all' || moduleStatus(module, r.data) === filter) &&
+        (module !== 'visitors' || visitorQueue(r.data) === visitorTab) &&
         (module !== 'facilities' ||
           categoryFilter === 'all' ||
           str(r.data.type) === categoryFilter ||
@@ -659,6 +673,11 @@ function ScopedModule({
           )}
         </div>
       </header>
+      {module === 'visitors' && <div className="visitor-queues" role="tablist" aria-label="Visitor queues">
+        {Object.entries(visitorQueueNames).map(([value, label]) => <button key={value} role="tab" aria-selected={visitorTab === value} onClick={() => { setVisitorTab(value as VisitorQueue); setFilter('all'); setPage(0); }}>
+          {label} ({resource.rows.filter(row => visitorQueue(row.data) === value).length})
+        </button>)}
+      </div>}
       {module === 'facilities' ? (
         <div className="facility-summary-grid">
           <div className="facility-summary-card total">
@@ -722,10 +741,10 @@ function ScopedModule({
                 : displayResource.error
                   ? '—'
                   : displayResource.rows.filter((r) =>
-                    ['pending', 'expected', 'open'].includes(status(r.data)),
+                    module === 'visitors' ? visitorQueue(r.data) === 'pending' : ['pending', 'expected', 'open'].includes(status(r.data)),
                   ).length}
             </strong>{' '}
-            Awaiting action
+            {module === 'visitors' ? 'Pending Admin approval' : 'Awaiting action'}
           </span>
           <span className="summary-note">
             <ShieldCheck size={18} /> {s.community?.name || 'Platform registry'}
@@ -739,7 +758,7 @@ function ScopedModule({
           onRefresh={() => setRevision((value) => value + 1)}
         />
       )}
-      <Card>
+      <Card className={module === 'visitors' ? 'visitor-records' : ''}>
         <div className="filters">
           <label className="search-field">
             <Search size={18} />
@@ -1025,6 +1044,7 @@ function ScopedModule({
                         <Pill value={moduleStatus(module, row.data)} />
                       </div>
                       <h3>{titleOf(row.data)}</h3>
+                      {module === 'visitors' && <p>Authorization: {authorizationLabel(row.data)}<br />Physical visit: {visitorPhysicalLabel(row.data)}<br />Host: {String(row.data.hostName ?? row.data.residentName ?? 'Resident')} · {String(row.data.flatLabel ?? row.data.flatId ?? '')}</p>}
                       <p>
                         {first(
                           row.data,
@@ -1041,7 +1061,7 @@ function ScopedModule({
                         )}
                       </p>
                       <small>
-                        {dateLabel(row.data.expectedArrival ?? row.data.date ?? row.data.createdAt)}
+                        {module === 'visitors' ? communityDate(row.data.expectedArrival ?? row.data.expectedTime, s.community?.data.timeZone) : dateLabel(row.data.expectedArrival ?? row.data.date ?? row.data.createdAt)}
                       </small>
                       <span className="card-more">
                         View details <ArrowRight size={16} />
@@ -1073,7 +1093,7 @@ function ScopedModule({
                     </th>
                     {module === 'payments' && <th scope="col">Method</th>}
                     {module === 'billing' && <th scope="col">Payment</th>}
-                    <th scope="col">Status</th>
+                    <th scope="col">{module === 'visitors' ? 'Physical visit' : 'Status'}</th>
                     <th scope="col">{module === 'payments' ? 'Date' : 'Last updated'}</th>
                     <th scope="col">
                       <span className="sr-only">Actions</span>
@@ -1102,6 +1122,7 @@ function ScopedModule({
                               : `Payment ${row.id}`
                             : first(row.data, ['phoneNumber', 'email', 'flatLabel'], row.id)}
                         </small>
+                        {module === 'visitors' && <small>Authorization: {authorizationLabel(row.data)}</small>}
                       </th>
                       <td>
                         {module === 'payments' && isV2PaymentProof(row.data) ? (
@@ -1112,6 +1133,8 @@ function ScopedModule({
                           )
                         ) : module === 'billing' && isV2Bill(row.data) ? (
                           <V2BillFinancialSummary data={row.data} compact />
+                        ) : module === 'visitors' ? (
+                          <><span>Host: {String(row.data.hostName ?? row.data.residentName ?? 'Resident')} · {String(row.data.flatLabel ?? row.data.flatId ?? '')}</span><small>Expected: {communityDate(row.data.expectedArrival ?? row.data.expectedTime, s.community?.data.timeZone)}</small></>
                         ) : ['billing', 'payments'].includes(module) ? (
                           money(amount(row.data))
                         ) : (
@@ -1155,7 +1178,7 @@ function ScopedModule({
                             row.data.createdAt ??
                             row.data.submittedAt,
                           )
-                          : dateLabel(row.data.updatedAt ?? row.data.createdAt)}
+                          : (module === 'visitors' ? communityDate(row.data.updatedAt ?? row.data.createdAt, s.community?.data.timeZone) : dateLabel(row.data.updatedAt ?? row.data.createdAt))}
                       </td>
                       <td>
                         <button
@@ -1317,6 +1340,7 @@ function CreateForm({ s, module, onClose }: { s: Session; module: Module; onClos
               <label>
                 Expected arrival
                 <input type="datetime-local" name="expectedArrival" required />
+                <small>{communityTimeLabel(s.community?.data.timeZone)}</small>
               </label>
               <PhoneNumberInput name="phoneNumber" label="Phone number" defaultCountry="PH" />
               <label>
@@ -1965,11 +1989,6 @@ function RecordDetails({
       setBusy(false);
     }
   }
-  const pendingVisitor =
-    ['pending', 'expected'].includes(status(d)) &&
-    d.isApproved !== true &&
-    d.actualArrival == null &&
-    d.departure == null;
   if ((module === 'events' || module === 'notices') && s.role === 'admin' && editingContent)
     return (
       <ContentEditForm
@@ -2067,6 +2086,7 @@ function RecordDetails({
           )}
           <Pill value={moduleStatus(module, d)} />
           <DetailFields
+            visitorZone={module === 'visitors' ? s.community?.data.timeZone ?? null : undefined}
             data={
               module === 'facilities'
                 ? { ...d, status: undefined, pricePerDay: undefined }
@@ -2213,7 +2233,7 @@ function RecordDetails({
           Bookings page.
         </p>
       )}
-      {module === 'residents' && s.role === 'admin' && <ResidentReview s={s} row={row} />}
+      {module === 'residents' && s.role === 'admin' && <ResidentReview key={`${s.community?.id}:${row.id}`} s={s} row={row} />}
       <div className="detail-actions">
         <fieldset disabled={busy}>
           {(module === 'events' || module === 'notices') && s.role === 'admin' && (
@@ -2249,33 +2269,7 @@ function RecordDetails({
               </label>
             </>
           )}
-          {module === 'visitors' && s.role === 'admin' && pendingVisitor && (
-            <div className="button-row">
-              <button
-                className="primary"
-                onClick={() =>
-                  void perform(() =>
-                    updateScoped(s, 'visitors', row.id, {
-                      ...adminVisitorApprovalPatch(s.uid, serverTimestamp()),
-                    }),
-                  )
-                }
-              >
-                Approve visitor
-              </button>
-              <button
-                onClick={() =>
-                  void perform(() =>
-                    updateScoped(s, 'visitors', row.id, {
-                      ...adminVisitorRejectionPatch(s.uid, serverTimestamp()),
-                    }),
-                  )
-                }
-              >
-                Reject visitor
-              </button>
-            </div>
-          )}
+          {module === 'visitors' && s.role === 'admin' && <VisitorDecisionActions key={s.community?.id + ':' + row.id} session={s} row={row} onSaved={onFacilitySaved} />}
           {module === 'units' &&
             s.role === 'admin' &&
             status(d) === 'reserved' &&
@@ -2399,6 +2393,7 @@ export function ProfilePage({
                 Your community updates are available in the notification center. Use the mobile app
                 for push alerts.
               </p>
+              {s.role === 'admin' && <Link to="/notifications">Open notifications</Link>}
               <h3>Display</h3>
               <p>This portal follows your browser’s language and date preferences.</p>
             </div>
@@ -2406,6 +2401,7 @@ export function ProfilePage({
         </Card>
       </div>
       {settings && s.role === 'admin' && s.community && <CommunityPaymentSettings session={s} />}
+      {settings && s.role === 'admin' && s.community && <VisitorPolicySettings session={s} />}
     </>
   );
 }
@@ -2434,6 +2430,7 @@ export function CommunityPage() {
           <p>Your community at a glance.</p>
         </div>
       </header>
+      {s.role === 'admin' && <ModerationQueue />}
       <div className="profile-grid">
         <section className="community-banner lifestyle">
           <h2>
@@ -2508,6 +2505,103 @@ function ReportData({ s }: { s: Session }) {
     report: BillingV2FinancialReport | null;
     error: boolean;
   }>({ key: '', loading: true, report: null, error: false });
+  const [reportMode, setReportMode] = useState<'all' | 'individual'>('all');
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
+  const [residentSearch, setResidentSearch] = useState('');
+  const [residentOptions, setResidentOptions] = useState<Awaited<ReturnType<typeof getAdminFinancialResidents>>>([]);
+  const [selectedResidentId, setSelectedResidentId] = useState<string | null>(null);
+  const residentRequest = useRef(0);
+  const detailRequest = useRef(0);
+  const [detailedReport, setDetailedReport] = useState<DetailedFinancialReport | null>(null);
+  const [detailedLoading, setDetailedLoading] = useState(false);
+  const [detailedError, setDetailedError] = useState('');
+
+  useEffect(() => {
+    residentRequest.current++;
+    detailRequest.current++;
+    setResidentOptions([]);
+    setSelectedResidentId(null);
+    setResidentSearch('');
+    setDetailedReport(null);
+    setDetailedLoading(false);
+    setReportMode('all');
+  }, [communityId]);
+
+  async function changeReportMode(mode: 'all' | 'individual') {
+    const request = ++residentRequest.current;
+    detailRequest.current++;
+    setReportMode(mode); setSelectedResidentId(null); setResidentSearch('');
+    setResidentOptions([]); setDetailedReport(null); setDetailedError('');
+    if (mode === 'individual') {
+      setDetailedLoading(true);
+      try {
+        const residents = await getAdminFinancialResidents(s);
+        if (residentRequest.current === request) setResidentOptions(residents);
+      } catch {
+        if (residentRequest.current === request) setDetailedError('Resident list is unavailable. Please try again.');
+      } finally {
+        if (residentRequest.current === request) setDetailedLoading(false);
+      }
+    } else setDetailedLoading(false);
+  }
+
+  async function generateDetailedReport() {
+    const request = ++detailRequest.current;
+    setDetailedLoading(true);
+    setDetailedError('');
+    try {
+      const fromMs = fromDate ? new Date(`${fromDate}T00:00:00`).getTime() : 0;
+      const toMs = toDate ? new Date(`${toDate}T23:59:59.999`).getTime() : 253402300799999;
+      const result = await getAdminBillingV2DetailedReport(s, { fromMs, toMs }, reportMode === 'individual' ? selectedResidentId ?? undefined : undefined);
+      if (request === detailRequest.current) setDetailedReport(result);
+    } catch (error) {
+      if (request === detailRequest.current) {
+        setDetailedError(error instanceof Error ? error.message : 'Financial report request failed.');
+        setDetailedReport(null);
+      }
+    } finally {
+      if (request === detailRequest.current) setDetailedLoading(false);
+    }
+  }
+
+  const detailRows = detailedReport?.rows ?? [];
+  const matchingResidents = residentOptions.filter((row) =>
+    `${row.identity.name} ${row.identity.phone} ${row.identity.unit} ${row.identity.deleted ? 'Deleted' : 'Active'}`.toLowerCase().includes(residentSearch.toLowerCase()),
+  );
+  const selectedResident = residentOptions.find((row) => row.residentId === selectedResidentId);
+  const selectedRow = detailRows.find((row) => row.residentId === selectedResidentId);
+  const visibleRows = reportMode === 'all' ? detailRows : selectedRow ? [selectedRow] : [];
+
+  function exportDetailedCsv() {
+    if (!detailedReport) return;
+    const rows: string[][] = [
+      ['Report period', fromDate || 'All history', toDate || 'Present and future'],
+      ...(detailedReport.coverageWarnings ?? []).map((warning) => ['Coverage warning', warning]),
+      ['Total billed minor', String(reportMode === 'all' ? detailedReport.totals.billedMinor : visibleRows[0]?.billedMinor ?? 0)],
+      ['Total paid minor', String(reportMode === 'all' ? detailedReport.totals.paidMinor : visibleRows[0]?.paidMinor ?? 0)],
+      ['Credit applied minor', String(reportMode === 'all' ? detailedReport.totals.creditAppliedMinor : visibleRows[0]?.creditAppliedMinor ?? 0)],
+      ['Available credit minor', String(reportMode === 'all' ? detailedReport.totals.availableCreditMinor : visibleRows[0]?.availableCreditMinor ?? 0)],
+      ['Outstanding minor', String(reportMode === 'all' ? detailedReport.totals.outstandingMinor : visibleRows[0]?.outstandingMinor ?? 0)],
+      ['Resident', 'Phone', 'Unit', 'Resident status', 'Billed minor', 'Paid minor', 'Credit applied minor', 'Available credit minor', 'Outstanding minor'],
+      ...visibleRows.map((row) => [row.identity.name, row.identity.phone, row.identity.unit, row.identity.deleted ? 'Deleted' : 'Active', String(row.billedMinor), String(row.paidMinor), String(row.creditAppliedMinor), String(row.availableCreditMinor), String(row.outstandingMinor)]),
+      [],
+      ['Resident', 'Phone', 'Unit', 'Resident status', 'Description', 'Billing period', 'Bill amount minor', 'Bill status', 'Payment amount minor', 'Payment method', 'Payment reference', 'Payment received at', 'Transaction created at'],
+    ];
+    for (const resident of visibleRows) {
+      for (const bill of resident.bills) {
+        if (!bill.settlements.length) rows.push([resident.identity.name, resident.identity.phone, resident.identity.unit, resident.identity.deleted ? 'Deleted' : 'Active', bill.description, bill.billingPeriod, String(bill.amountMinor), bill.status, '', '', '', '']);
+        for (const payment of bill.settlements) rows.push([resident.identity.name, resident.identity.phone, resident.identity.unit, resident.identity.deleted ? 'Deleted' : 'Active', bill.description, bill.billingPeriod, String(bill.amountMinor), bill.status, String(payment.amountMinor), payment.method, payment.reference ?? '', new Date(payment.receivedAtMs).toISOString(), new Date(payment.createdAtMs).toISOString()]);
+      }
+    }
+    rows.push([], ['Receipts in reporting period (separate from bill allocations)'], ['Resident', 'Transaction', 'Received amount minor', 'Method', 'Reference', 'Received at', 'Created at']);
+    for (const resident of visibleRows) {
+      for (const payment of resident.payments) rows.push([resident.identity.name, payment.transactionId, String(payment.receivedAmountMinor), payment.method, payment.reference ?? '', new Date(payment.receivedAtMs).toISOString(), new Date(payment.createdAtMs).toISOString()]);
+    }
+    const csv = rows.map((row) => row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(',')).join('\r\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const a = document.createElement('a'); a.href = url; a.download = `resident-financial-report-${fromDate}-${toDate}.csv`; a.click(); URL.revokeObjectURL(url);
+  }
 
   useEffect(() => {
     const id = ++requestId.current;
@@ -2645,6 +2739,30 @@ function ReportData({ s }: { s: Session }) {
         ) : (
           <FinancialReportDashboard report={visibleFinancialState.report} />
         )}
+      </section>
+      <section className="financial-report" aria-labelledby="resident-report-title">
+        <header className="financial-report-header">
+          <div><p className="eyebrow">Resident statements</p><h2 id="resident-report-title">Resident financial report</h2><p>Choose a report type and reporting date range.</p></div>
+          <div className="financial-report-actions">
+            <label><span>Report Type</span><select aria-label="Report Type" value={reportMode} onChange={(event) => void changeReportMode(event.target.value as 'all' | 'individual')}><option value="all">All Residents</option><option value="individual">Individual Resident</option></select></label>
+            <label><span>From (optional)</span><input aria-label="From date" type="date" value={fromDate} onChange={(event) => { detailRequest.current++; setDetailedLoading(false); setFromDate(event.target.value); setDetailedReport(null); }} /></label>
+            <label><span>To (optional)</span><input aria-label="To date" type="date" value={toDate} onChange={(event) => { detailRequest.current++; setDetailedLoading(false); setToDate(event.target.value); setDetailedReport(null); }} /></label>
+          </div>
+        </header>
+        {reportMode === 'individual' && <div className="financial-report-period">
+          <label><span>Search resident by name, phone or unit</span><input aria-label="Search resident" value={residentSearch} onChange={(event) => {detailRequest.current++; setDetailedLoading(false); setResidentSearch(event.target.value); setSelectedResidentId(null); setDetailedReport(null);}} /></label>
+          {!selectedResident && <div className="financial-report-residents" role="listbox" aria-label="Residents">{matchingResidents.map((row) => <button type="button" role="option" aria-selected={false} key={row.residentId} onClick={() => {setSelectedResidentId(row.residentId); setResidentSearch(`${row.identity.name} · ${row.identity.phone} · ${row.identity.unit} · ${row.identity.deleted ? 'Deleted' : 'Active'}`); setDetailedReport(null);}}>{row.identity.name || 'Resident'} · {row.identity.phone || 'Phone unavailable'} · {row.identity.unit || 'Unit unavailable'} · {row.identity.deleted ? 'Deleted' : 'Active'}</button>)}</div>}
+        </div>}
+        <div className="financial-report-actions">{(reportMode === 'all' || selectedResident) && <button className="primary" disabled={detailedLoading || (!!fromDate && !!toDate && toDate < fromDate)} onClick={() => void generateDetailedReport()}>{detailedLoading ? 'Generating…' : 'Generate Report'}</button>}</div>
+        {detailedError && <p role="alert">{detailedError}</p>}
+        {detailedLoading && <p role="status">Generating financial report…</p>}
+        {detailedReport && !detailedLoading && <>
+          {(detailedReport.coverageWarnings ?? []).map((warning) => <p role="alert" key={warning}>{warning}</p>)}
+          <div className="financial-report-actions"><button className="outline-link" onClick={exportDetailedCsv}><Download size={18} />Export CSV</button></div>
+          {reportMode === 'all' && <div className="financial-report-kpis" aria-label="Resident report totals"><article className="financial-report-kpi"><span>Total billed</span><strong>{formatInrMinorUnits(detailedReport.totals.billedMinor)}</strong></article><article className="financial-report-kpi"><span>Total paid</span><strong>{formatInrMinorUnits(detailedReport.totals.paidMinor)}</strong></article><article className="financial-report-kpi"><span>Credit applied / available</span><strong>{formatInrMinorUnits(detailedReport.totals.creditAppliedMinor)} / {formatInrMinorUnits(detailedReport.totals.availableCreditMinor)}</strong></article><article className="financial-report-kpi"><span>Outstanding</span><strong>{formatInrMinorUnits(detailedReport.totals.outstandingMinor)}</strong></article><article className="financial-report-kpi"><span>Residents</span><strong>{detailedReport.totals.residentsCount}</strong></article></div>}
+          {reportMode === 'individual' && !selectedRow && <p role="status">Choose a Resident from the searchable list.</p>}
+          {visibleRows.map((resident) => <article key={resident.residentId} className="financial-report-card"><h3>{resident.identity.name || 'Resident'} {resident.identity.deleted ? '(Deleted)' : '(Active)'}</h3><p>{resident.identity.phone || 'Phone unavailable'} · Unit {resident.identity.unit || 'unavailable'} · {resident.identity.residentType || 'Resident'}</p><p>Total billed: {formatInrMinorUnits(resident.billedMinor)} · Total paid: {formatInrMinorUnits(resident.paidMinor)} · Credit applied/available: {formatInrMinorUnits(resident.creditAppliedMinor)} / {formatInrMinorUnits(resident.availableCreditMinor)} · Outstanding: {formatInrMinorUnits(resident.outstandingMinor)} · {resident.paymentStatus}</p><div className="table-scroll"><table><thead><tr><th>Description</th><th>Period</th><th>Bill amount</th><th>Status</th><th>Payment</th><th>Method / reference</th><th>Received</th><th>Transaction</th></tr></thead><tbody>{resident.bills.flatMap((bill) => bill.settlements.length ? bill.settlements.map((payment) => <tr key={`${bill.billId}-${payment.transactionId}`}><td>{bill.description}</td><td>{bill.billingPeriod}</td><td>{formatInrMinorUnits(bill.amountMinor)}</td><td>{bill.status}</td><td>{formatInrMinorUnits(payment.amountMinor)}</td><td>{payment.method} / {payment.reference || '—'}</td><td>{new Date(payment.receivedAtMs).toLocaleString()}</td><td>{new Date(payment.createdAtMs).toLocaleString()}</td></tr>) : [<tr key={bill.billId}><td>{bill.description}</td><td>{bill.billingPeriod}</td><td>{formatInrMinorUnits(bill.amountMinor)}</td><td>{bill.status}</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>])}</tbody></table></div><h4>Receipts in reporting period</h4><p>Current bill balances include net settlements. Receipts below are separate activity and may include credit or payments toward older bills.</p>{resident.payments.map((payment) => <p key={payment.transactionId}>{formatInrMinorUnits(payment.receivedAmountMinor)} · {payment.method} · {payment.reference || '—'} · Transaction {payment.transactionId} · Received {new Date(payment.receivedAtMs).toLocaleString()} · Created {new Date(payment.createdAtMs).toLocaleString()}</p>)}</article>)}
+        </>}
       </section>
       <section className="community-overview" aria-labelledby="community-overview-title">
         <header className="community-overview-header">

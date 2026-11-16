@@ -104,21 +104,40 @@ function ModerationCard({
     </article>
   );
 }
+type View = 'summary' | 'history' | 'reports';
+type PageInfo = {
+  total: number;
+  totalCurrent: number;
+  nextCursor: string | null;
+  pageCursor: string;
+  snapshotAtMs: number;
+};
+type Selection = { view: View; page: number; cursor?: string; search: string; searchField: string };
+const initialSelection: Selection = { view: 'summary', page: 0, search: '', searchField: 'action' };
 export function ModerationQueue() {
   const { session } = useAuth();
   const communityId = session?.role === 'admin' ? session.community?.id : undefined;
+  if (!communityId) return <p>Select an authorized community to review moderation.</p>;
+  return <ModerationConsole key={communityId} communityId={communityId} />;
+}
+function ModerationConsole({ communityId }: { communityId: string }) {
   const [reports, setReports] = useState<Report[]>([]);
   const [history, setHistory] = useState<History[]>([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [queueLoaded, setQueueLoaded] = useState(false);
   const [busy, setBusy] = useState('');
-  const [truncated, setTruncated] = useState({ reports: false, history: false });
-  const [historyOffset, setHistoryOffset] = useState(0);
+  const [selection, setSelection] = useState<Selection>(initialSelection);
+  const [pages, setPages] = useState<{ reports: PageInfo | null; history: PageInfo | null }>({
+    reports: null,
+    history: null,
+  });
+  const [searchDraft, setSearchDraft] = useState('');
+  const [searchField, setSearchField] = useState('action');
+  const cursors = useRef<(string | undefined)[]>([]);
   const request = useRef(0);
   const inFlight = useRef(false);
-  const activeCommunity = useRef(communityId);
-  activeCommunity.current = communityId;
+  const activeCommunity = useRef<string | undefined>(communityId);
   const [decision, setDecision] = useState<{ report: Report; action: 'dismiss' | 'hide' } | null>(
     null,
   );
@@ -126,51 +145,64 @@ export function ModerationQueue() {
   const [publicExplanation, setPublicExplanation] = useState('');
   const [internalNote, setInternalNote] = useState('');
   const [decisionError, setDecisionError] = useState('');
-  const invalidateRequests = useCallback(() => {
-    request.current++;
-  }, []);
-  const refresh = useCallback(async () => {
-    if (!communityId) return;
-    const sequence = ++request.current;
-    setLoading(true);
-    setQueueLoaded(false);
-    setError('');
-    try {
-      const result = await call<{
-        reports: Report[];
-        history: History[];
-        reportsTruncated?: boolean;
-        historyTruncated?: boolean;
-      }>('listWallModerationReports', { communityId });
-      if (request.current === sequence) {
-        setQueueLoaded(true);
-        setReports(result.reports);
-        setHistory(result.history);
-        setHistoryOffset(result.history.length);
-        setTruncated({
-          reports: result.reportsTruncated === true,
-          history: result.historyTruncated === true,
+  const load = useCallback(
+    async (next: Selection) => {
+      const sequence = ++request.current;
+      setSelection(next);
+      setLoading(true);
+      setQueueLoaded(false);
+      setError('');
+      try {
+        const result = await call<{
+          reports: Report[];
+          history: History[];
+          reportsPage: PageInfo | null;
+          historyPage: PageInfo | null;
+        }>('listWallModerationReports', {
+          communityId,
+          view: next.view,
+          pageSize: next.view === 'summary' ? 3 : 10,
+          ...(next.cursor ? { cursor: next.cursor } : {}),
+          ...(next.view === 'history'
+            ? { searchField: next.searchField, search: next.search }
+            : {}),
         });
+        if (request.current === sequence) {
+          setQueueLoaded(true);
+          setReports(result.reports);
+          setHistory(result.history);
+          setPages({ reports: result.reportsPage, history: result.historyPage });
+          const info = next.view === 'reports' ? result.reportsPage : result.historyPage;
+          cursors.current[next.page] = info?.pageCursor;
+          cursors.current[next.page + 1] = info?.nextCursor ?? undefined;
+        }
+      } catch (error) {
+        if (request.current === sequence)
+          setError(errorMessage(error, 'Moderation queue could not be loaded.'));
+      } finally {
+        if (request.current === sequence) setLoading(false);
       }
-    } catch (error) {
-      if (request.current === sequence)
-        setError(errorMessage(error, 'Moderation queue could not be loaded.'));
-    } finally {
-      if (request.current === sequence) setLoading(false);
-    }
-  }, [communityId]);
+    },
+    [communityId],
+  );
+  const refresh = () => {
+    cursors.current = [];
+    return load({ ...selection, page: 0, cursor: undefined });
+  };
   useEffect(() => {
     activeCommunity.current = communityId;
-    setReports([]);
-    setHistory([]);
-    setBusy('');
-    setDecision(null);
-    void refresh();
+    void load(initialSelection);
     return () => {
-      invalidateRequests();
+      request.current++;
       activeCommunity.current = undefined;
     };
-  }, [refresh, invalidateRequests, communityId]);
+  }, [communityId, load]);
+  function open(view: View) {
+    cursors.current = [];
+    setSearchDraft('');
+    setSearchField('action');
+    void load({ ...initialSelection, view });
+  }
   function choose(report: Report, action: 'dismiss' | 'hide') {
     if (busy || inFlight.current) return;
     setReasonCode('');
@@ -211,29 +243,8 @@ export function ModerationQueue() {
       if (activeCommunity.current === communityId) setBusy('');
     }
   }
-  async function loadMoreHistory() {
-    if (!communityId || busy) return;
-    const sequence = request.current;
-    setBusy('history');
-    setError('');
-    try {
-      const result = await call<{ history: History[]; historyTruncated?: boolean }>(
-        'listWallModerationReports',
-        { communityId, historyOffset },
-      );
-      if (request.current === sequence) {
-        setHistory((previous) => [...previous, ...result.history]);
-        setHistoryOffset((previous) => previous + result.history.length);
-        setTruncated((previous) => ({ ...previous, history: result.historyTruncated === true }));
-      }
-    } catch (error) {
-      if (request.current === sequence)
-        setError(errorMessage(error, 'Moderation history could not be loaded.'));
-    } finally {
-      if (request.current === sequence) setBusy('');
-    }
-  }
-  if (!communityId) return <p>Select an authorized community to review moderation.</p>;
+  const { view, page } = selection;
+  const pageInfo = view === 'reports' ? pages.reports : pages.history;
   return (
     <section className="financial-report moderation-console" aria-labelledby="moderation-title">
       <header className="financial-report-header">
@@ -245,50 +256,171 @@ export function ModerationQueue() {
           Refresh
         </button>
       </header>
+      {view !== 'summary' && (
+        <div className="moderation-toolbar">
+          <button
+            className="secondary"
+            disabled={loading || !!busy}
+            onClick={() => open('summary')}
+          >
+            Back to overview
+          </button>
+          <h3>{view === 'history' ? 'All moderation history' : 'All open reports'}</h3>
+        </div>
+      )}
+      {view === 'history' && (
+        <form
+          className="moderation-search"
+          onSubmit={(event) => {
+            event.preventDefault();
+            cursors.current = [];
+            void load({ view, page: 0, search: searchDraft.trim(), searchField });
+          }}
+        >
+          <label>
+            Search field
+            <select value={searchField} onChange={(event) => setSearchField(event.target.value)}>
+              <option value="action">Decision action</option>
+              <option value="reasonCode">Reason code</option>
+              <option value="postId">Post ID</option>
+              <option value="reportId">Report ID</option>
+            </select>
+          </label>
+          <label>
+            Search history
+            <input
+              type="search"
+              maxLength={128}
+              value={searchDraft}
+              onChange={(event) => setSearchDraft(event.target.value)}
+              aria-describedby="moderation-search-help"
+              placeholder={searchField === 'action' ? 'hide or dismiss' : 'Enter exact value'}
+            />
+          </label>
+          <button className="primary" disabled={loading || !!busy}>
+            Search
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            disabled={loading || !!busy}
+            onClick={() => {
+              setSearchDraft('');
+              cursors.current = [];
+              void load({ ...selection, page: 0, cursor: undefined, search: '' });
+            }}
+          >
+            Clear
+          </button>
+          <p id="moderation-search-help">
+            Exact, case-sensitive matches only. Actions: hide or dismiss. Reason codes include spam,
+            harassment and no_violation. Content, names and internal notes are not searched.
+          </p>
+        </form>
+      )}
       {error && <p role="alert">{error}</p>}
       {loading ? (
         <p role="status">Loading moderation queue…</p>
       ) : !queueLoaded ? (
-        <button onClick={() => void refresh()}>Retry</button>
+        <button onClick={() => void load(selection)}>Retry</button>
       ) : (
         <>
-          <div className="moderation-section-heading">
-            <h3>Open reports</h3>
-            <span>{reports.length} open</span>
-          </div>
-          {truncated.reports && (
-            <p>Showing the first 500 open reports. Resolve reports and refresh to see more.</p>
+          {view !== 'history' && (
+            <>
+              <div className="moderation-section-heading">
+                <h3>Open reports</h3>
+                <span>{pages.reports?.total ?? reports.length} open</span>
+                {view === 'summary' && (
+                  <button className="secondary" onClick={() => open('reports')} disabled={!!busy}>
+                    View all reports
+                  </button>
+                )}
+              </div>
+              {reports.length === 0 && <p className="moderation-empty">No open reports.</p>}
+              <div className="moderation-grid">
+                {reports.map((r) => (
+                  <ModerationCard
+                    key={r.id}
+                    item={r}
+                    busy={!!busy}
+                    decide={(action) => choose(r, action)}
+                  />
+                ))}
+              </div>
+            </>
           )}
-          {reports.length === 0 && <p className="moderation-empty">No open reports.</p>}
-          <div className="moderation-grid">
-            {reports
-              .filter((r) => r.status === 'open')
-              .map((r) => (
-                <ModerationCard
-                  key={r.id}
-                  item={r}
-                  busy={!!busy}
-                  decide={(action) => choose(r, action)}
-                />
-              ))}
-          </div>
-          <div className="moderation-section-heading">
-            <h3>Moderation history</h3>
-            <span>{history.length} decisions</span>
-          </div>
-          {history.length === 0 ? (
-            <p className="moderation-empty">No moderation actions yet.</p>
-          ) : (
-            <div className="moderation-grid">
-              {history.map((h) => (
-                <ModerationCard key={h.id} item={h} history />
-              ))}
-            </div>
+          {view !== 'reports' && (
+            <>
+              <div className="moderation-section-heading">
+                <h3>Moderation history</h3>
+                <span>
+                  {pages.history?.total ?? history.length} decisions
+                  {selection.search ? ' matching search' : ''}
+                </span>
+                {view === 'summary' && (
+                  <button className="secondary" onClick={() => open('history')} disabled={!!busy}>
+                    View all history
+                  </button>
+                )}
+              </div>
+              {history.length === 0 ? (
+                <p className="moderation-empty">
+                  {selection.search
+                    ? 'No decisions match this search.'
+                    : 'No moderation actions yet.'}
+                </p>
+              ) : (
+                <div className="moderation-grid">
+                  {history.map((h) => (
+                    <ModerationCard key={h.id} item={h} history />
+                  ))}
+                </div>
+              )}
+            </>
           )}
-          {truncated.history && (
-            <button className="secondary" disabled={!!busy} onClick={() => void loadMoreHistory()}>
-              Load more history
-            </button>
+          {view !== 'summary' && (
+            <nav className="moderation-pagination" aria-label="Moderation pagination">
+              <button
+                className="secondary"
+                disabled={page === 0 || !!busy}
+                onClick={() =>
+                  void load({ ...selection, page: page - 1, cursor: cursors.current[page - 1] })
+                }
+              >
+                Previous
+              </button>
+              <span>
+                Page {page + 1} · {view === 'reports' ? reports.length : history.length} shown ·{' '}
+                {pageInfo?.total ?? 0} available
+              </span>
+              <button
+                className="secondary"
+                disabled={!pageInfo?.nextCursor || !!busy}
+                onClick={() =>
+                  void load({
+                    ...selection,
+                    page: page + 1,
+                    cursor: pageInfo?.nextCursor ?? undefined,
+                  })
+                }
+              >
+                Next
+              </button>
+            </nav>
+          )}
+          {view !== 'summary' && (
+            <p className="moderation-meta">
+              Newest first. New records appear after Refresh. Open report availability may change as
+              other Admins work.
+            </p>
+          )}
+          {[pages.reports, pages.history].some(
+            (info) => info && info.totalCurrent > info.total,
+          ) && (
+            <p role="status">
+              Newer or undated records are outside this dated view. Refresh to include new records.
+              Earlier undated records remain available in the legacy Admin client.
+            </p>
           )}
         </>
       )}

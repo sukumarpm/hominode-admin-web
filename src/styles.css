@@ -6121,3 +6121,12 @@ img.avatar {
 .account-deletion-dialog .assisted-check { display: flex; align-items: flex-start; font-weight: 400; }
 .assisted-check input { margin-top: 4px; flex-shrink: 0; }
 .assisted-details { overflow-wrap: anywhere; }
+.moderation-console .moderation-toolbar,
+.moderation-console .moderation-pagination {display:flex; align-items:center; flex-wrap:wrap; gap:1rem; margin:1rem 0;}
+.moderation-console .moderation-search {display:flex; align-items:end; flex-wrap:wrap; gap:.75rem; margin:1rem 0;}
+.moderation-console .moderation-search label {display:grid; gap:.35rem; flex:1 1 180px; min-width:0;}
+.moderation-console .moderation-search input,
+.moderation-console .moderation-search select {width:100%; min-width:0;}
+.moderation-console .moderation-search p {flex-basis:100%; margin:0; color:var(--muted, #64748b); font-size:.875rem;}
+.moderation-console .moderation-section-heading {flex-wrap:wrap;}
+.moderation-console .moderation-pagination span {font-size:.875rem; color:var(--muted, #64748b);}

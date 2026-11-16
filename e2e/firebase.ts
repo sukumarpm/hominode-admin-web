@@ -1,8 +1,11 @@
+import { moderationCall } from './moderationFixture';
 // Every network operation is disabled in this test adapter.
 export function firebase(): never {
   throw Error('Live Firebase is forbidden in the offline browser harness.');
 }
 export async function call<T>(name: string, data: Record<string, unknown> = {}): Promise<T> {
+  if (name === 'listWallModerationReports' || name === 'resolveWallModerationReport')
+    return (await moderationCall(name, data)) as T;
   if (name === 'resolveResidentCommunity')
     return {
       slug: data.slug,

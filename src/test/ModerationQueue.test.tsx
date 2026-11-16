@@ -40,6 +40,8 @@ it('shows community reports and history, then submits an authorized hide action'
   expect(await screen.findByText('Inappropriate comment')).toBeInTheDocument();
   expect(mock.call).toHaveBeenCalledWith('listWallModerationReports', {
     communityId: session.community!.id,
+    view: 'summary',
+    pageSize: 3,
   });
   fireEvent.click(screen.getByRole('button', { name: 'Hide content' }));
   expect(screen.getByRole('button', { name: 'Confirm decision' })).toBeDisabled();
@@ -65,38 +67,6 @@ it('shows community reports and history, then submits an authorized hide action'
   );
   expect(await screen.findByText(/Content hidden/)).toBeInTheDocument();
 });
-it('loads further history using the current community and page offset', async () => {
-  const session = makeSession('admin');
-  const state: AuthState = {
-    session,
-    loading: false,
-    error: '',
-    authenticated: true,
-    signOut: vi.fn(async () => {}),
-    switchCommunity: vi.fn(),
-  };
-  mock.call.mockResolvedValueOnce({
-    reports: [],
-    history: [{ id: 'h1', action: 'dismiss', actorId: 'admin' }],
-    historyTruncated: true,
-  });
-  mock.call.mockResolvedValueOnce({
-    history: [{ id: 'h2', action: 'hide', actorId: 'admin' }],
-    historyTruncated: false,
-  });
-  render(
-    <AuthContext value={state}>
-      <ModerationQueue />
-    </AuthContext>,
-  );
-  fireEvent.click(await screen.findByRole('button', { name: 'Load more history' }));
-  expect(await screen.findByText(/Content hidden/)).toBeInTheDocument();
-  expect(mock.call).toHaveBeenCalledWith('listWallModerationReports', {
-    communityId: session.community!.id,
-    historyOffset: 1,
-  });
-});
-
 it('shows backend load errors and Retry without claiming the failed queue is empty', async () => {
   const session = makeSession('admin');
   const state: AuthState = {
@@ -178,6 +148,8 @@ it('shows selected report reasons and ignores a stale response after switching c
   await waitFor(() => expect(screen.queryByText('Wrong community post')).not.toBeInTheDocument());
   expect(mock.call).toHaveBeenCalledWith('listWallModerationReports', {
     communityId: 'community-2',
+    view: 'summary',
+    pageSize: 3,
   });
 });
 
@@ -304,4 +276,172 @@ it('decision failure retains reason and permits retry without recording false su
   expect(screen.getByLabelText('Public decision reason')).toHaveValue('spam');
   fireEvent.click(screen.getByRole('button', { name: 'Confirm decision' }));
   expect(await screen.findByText('No open reports.')).toBeInTheDocument();
+});
+
+const pageInfo = (total: number, nextCursor: string | null = null, pageCursor = 'first') => ({
+  total,
+  totalCurrent: total,
+  nextCursor,
+  pageCursor,
+  snapshotAtMs: 1700000000000,
+});
+const historyRows = (length: number, prefix = 'h') =>
+  Array.from({ length }, (_, i) => ({
+    id: `${prefix}${i}`,
+    action: 'hide',
+    contentSnapshot: `${prefix} content ${i}`,
+    internalNote: 'Private note',
+  }));
+function mountQueue() {
+  const session = makeSession('admin');
+  render(
+    <AuthContext
+      value={{
+        session,
+        loading: false,
+        error: '',
+        authenticated: true,
+        signOut: vi.fn(),
+        switchCommunity: vi.fn(),
+      }}
+    >
+      <ModerationQueue />
+    </AuthContext>,
+  );
+  return session.community!.id;
+}
+it('replaces history pages, returns to a stable first page, searches and clears', async () => {
+  mock.call.mockResolvedValueOnce({
+    reports: [],
+    history: historyRows(3),
+    reportsPage: pageInfo(0),
+    historyPage: pageInfo(100),
+  });
+  mock.call.mockResolvedValueOnce({
+    reports: [],
+    history: historyRows(10),
+    historyPage: pageInfo(100, 'second'),
+  });
+  mock.call.mockResolvedValueOnce({
+    reports: [],
+    history: historyRows(10, 'next'),
+    historyPage: pageInfo(100, 'third', 'second'),
+  });
+  mock.call.mockResolvedValueOnce({
+    reports: [],
+    history: historyRows(10),
+    historyPage: pageInfo(100, 'second'),
+  });
+  mock.call.mockResolvedValueOnce({ reports: [], history: [], historyPage: pageInfo(0) });
+  mock.call.mockResolvedValueOnce({
+    reports: [],
+    history: historyRows(10),
+    historyPage: pageInfo(100, 'second'),
+  });
+  const communityId = mountQueue();
+  expect(await screen.findAllByRole('article')).toHaveLength(3);
+  fireEvent.click(screen.getByRole('button', { name: 'View all history' }));
+  expect(await screen.findByText('Page 1 · 10 shown · 100 available')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Previous' })).toBeDisabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+  expect(await screen.findByText('Page 2 · 10 shown · 100 available')).toBeInTheDocument();
+  expect(screen.getAllByRole('article')).toHaveLength(10);
+  expect(screen.queryByText('h content 0')).not.toBeInTheDocument();
+  expect(mock.call).toHaveBeenLastCalledWith('listWallModerationReports', {
+    communityId,
+    view: 'history',
+    pageSize: 10,
+    cursor: 'second',
+    search: '',
+    searchField: 'action',
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Previous' }));
+  expect(await screen.findByText('h content 0')).toBeInTheDocument();
+  expect(mock.call).toHaveBeenLastCalledWith(
+    'listWallModerationReports',
+    expect.objectContaining({ cursor: 'first' }),
+  );
+  fireEvent.change(screen.getByLabelText('Search field'), { target: { value: 'postId' } });
+  fireEvent.change(screen.getByLabelText('Search history'), { target: { value: 'missing' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+  expect(await screen.findByText('No decisions match this search.')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
+  expect(mock.call).toHaveBeenLastCalledWith('listWallModerationReports', {
+    communityId,
+    view: 'history',
+    pageSize: 10,
+    searchField: 'postId',
+    search: 'missing',
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+  expect(await screen.findByText('Page 1 · 10 shown · 100 available')).toBeInTheDocument();
+  expect(screen.getAllByText('Internal note · Admin only')).toHaveLength(10);
+});
+it('paginates reports and resets to the first page after a decision', async () => {
+  const report = (id: string) => ({ id, status: 'open', contentSnapshot: id });
+  mock.call.mockResolvedValueOnce({
+    reports: [report('first')],
+    history: [],
+    reportsPage: pageInfo(11),
+    historyPage: pageInfo(0),
+  });
+  mock.call.mockResolvedValueOnce({
+    reports: Array.from({ length: 10 }, (_, i) => report(`r${i}`)),
+    history: [],
+    reportsPage: pageInfo(11, 'last'),
+  });
+  mock.call.mockResolvedValueOnce({
+    reports: [report('last')],
+    history: [],
+    reportsPage: pageInfo(11, null, 'last'),
+  });
+  mock.call.mockResolvedValueOnce({ success: true });
+  mock.call.mockResolvedValueOnce({
+    reports: Array.from({ length: 10 }, (_, i) => report(`r${i}`)),
+    history: [],
+    reportsPage: pageInfo(10),
+  });
+  mountQueue();
+  fireEvent.click(await screen.findByRole('button', { name: 'View all reports' }));
+  expect(await screen.findByText('Page 1 · 10 shown · 11 available')).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+  expect(await screen.findByText('Page 2 · 1 shown · 11 available')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Dismiss report' }));
+  fireEvent.change(screen.getByLabelText('Public decision reason'), {
+    target: { value: 'no_violation' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm decision' }));
+  expect(await screen.findByText('Page 1 · 10 shown · 10 available')).toBeInTheDocument();
+  expect(mock.call).toHaveBeenLastCalledWith(
+    'listWallModerationReports',
+    expect.objectContaining({ view: 'reports', pageSize: 10 }),
+  );
+  expect(mock.call.mock.lastCall?.[1]).not.toHaveProperty('cursor');
+});
+it('retains a failed page request for Retry and shows loading without stale cards', async () => {
+  mock.call.mockResolvedValueOnce({
+    reports: [],
+    history: [],
+    reportsPage: pageInfo(0),
+    historyPage: pageInfo(20),
+  });
+  mock.call.mockResolvedValueOnce({
+    reports: [],
+    history: historyRows(10),
+    historyPage: pageInfo(20, 'next'),
+  });
+  mock.call.mockRejectedValueOnce(Error('Temporary query error'));
+  mock.call.mockResolvedValueOnce({ reports: [], history: [], historyPage: pageInfo(0) });
+  mountQueue();
+  fireEvent.click(await screen.findByRole('button', { name: 'View all history' }));
+  expect(await screen.findByText('Page 1 · 10 shown · 20 available')).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+  expect(screen.getByRole('status')).toHaveTextContent('Loading moderation queue');
+  expect(await screen.findByRole('alert')).toHaveTextContent('Temporary query error');
+  expect(screen.queryAllByRole('article')).toHaveLength(0);
+  fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+  expect(await screen.findByText('Page 2 · 0 shown · 0 available')).toBeInTheDocument();
+  expect(mock.call.mock.lastCall?.[1]).toHaveProperty('cursor', 'next');
+  expect(screen.getByRole('button', { name: 'Previous' })).toBeEnabled();
 });

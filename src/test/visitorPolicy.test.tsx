@@ -3,6 +3,9 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { VisitorPolicySettings } from '../VisitorPolicySettings';
 import { VisitorDecisionActions } from '../VisitorDecisionActions';
 import {
+  VisitorPolicySaveError, visitorPolicyReadTimeoutMs, visitorPolicySaveTimeoutMs,
+} from '../visitorPolicyService';
+import {
   approvalOptions,
   authorizationLabel,
   futureSchedule,
@@ -214,6 +217,22 @@ it('locks duplicate saves and handles a backend revision conflict without optimi
   await act(async () => reject(Object.assign(Error('conflict'), { code: 'functions/aborted' })));
   expect(screen.getByText(/This record changed/)).toBeInTheDocument();
   expect(screen.getByText('Save visitor settings')).toBeDisabled();
+});
+it('finishes saving when its policy snapshot publishes a new session for the same community', async () => {
+  let finish!: (value: VisitorPolicyResponse) => void;
+  mock.save.mockReturnValue(new Promise<VisitorPolicyResponse>(resolve => { finish = resolve; }));
+  const session = makeSession('admin');
+  const view = render(<VisitorPolicySettings session={session} />);
+  await screen.findByLabelText('Approval policy');
+  fireEvent.click(screen.getByText('Save visitor settings'));
+  loaded = { ...loaded, writeRevision: 5, policy: { ...loaded.policy, revision: 5 } };
+  view.rerender(<VisitorPolicySettings session={{ ...session,
+    community: { ...session.community!, data: { ...session.community!.data, visitorPolicy: loaded.policy } },
+  }} />);
+  await act(async () => { finish(clone(loaded)); });
+  await waitFor(() => expect(screen.queryByText('Saving…')).not.toBeInTheDocument());
+  expect(screen.getByText('Save visitor settings')).toBeEnabled();
+  expect(mock.save).toHaveBeenCalledOnce();
 });
 it('clears the prior editor immediately when the active community changes', async () => {
   const view = await mount();
@@ -461,6 +480,95 @@ it('ignores a save response that arrives after switching communities', async () 
   expect(screen.getByLabelText('Approval policy')).toHaveValue('resident_authorized');
   expect(screen.queryByText(/saved and reloaded/)).not.toBeInTheDocument();
 });
+
+it('recovers a stalled initial read and offers a bounded explicit reload', async () => {
+  vi.useFakeTimers();
+  mock.load.mockReturnValueOnce(new Promise(() => {}));
+  render(<VisitorPolicySettings session={makeSession('admin')} />);
+  await act(async () => { await vi.advanceTimersByTimeAsync(visitorPolicyReadTimeoutMs); });
+  expect(screen.queryByText('Loading visitor policy…')).not.toBeInTheDocument();
+  expect(screen.getByRole('status')).toHaveTextContent(/timed out/);
+  expect(screen.getByText('Reload policy')).toBeEnabled();
+  fireEvent.click(screen.getByText('Reload policy'));
+  await act(async () => {});
+  expect(screen.getByLabelText('Approval policy')).toBeInTheDocument();
+  expect(mock.save).not.toHaveBeenCalled();
+});
+
+it('exits a stalled Save, ignores late completion, and requires Reload without retrying the write', async () => {
+  vi.useFakeTimers();
+  let finish!: (value: VisitorPolicyResponse) => void;
+  mock.save.mockReturnValueOnce(new Promise<VisitorPolicyResponse>(resolve => { finish = resolve; }));
+  render(<VisitorPolicySettings session={makeSession('admin')} />);
+  await act(async () => {});
+  fireEvent.click(screen.getByText('Save visitor settings'));
+  const signal = mock.save.mock.calls[0][4] as AbortSignal;
+  await act(async () => { await vi.advanceTimersByTimeAsync(visitorPolicySaveTimeoutMs); });
+  expect(screen.queryByText('Saving…')).not.toBeInTheDocument();
+  expect(screen.getByRole('status')).toHaveTextContent(/may have been saved/);
+  expect(screen.getByText('Save visitor settings')).toBeDisabled();
+  expect(screen.getByText('Reload policy')).toBeEnabled();
+  expect(signal.aborted).toBe(true);
+  act(() => { mock.changed!(); fireEvent.focus(window); });
+  await act(async () => { finish(clone(loaded)); });
+  expect(screen.queryByText(/saved and reloaded/)).not.toBeInTheDocument();
+  expect(mock.save).toHaveBeenCalledOnce();
+  expect(mock.load).toHaveBeenCalledOnce();
+  loaded = { ...loaded, writeRevision: 5, policy: { ...loaded.policy, revision: 5 } };
+  fireEvent.click(screen.getByText('Reload policy'));
+  await act(async () => {});
+  expect(screen.getByText('Save visitor settings')).toBeEnabled();
+  expect(mock.save).toHaveBeenCalledOnce();
+});
+
+it('keeps a confirmed-write/reload-failure message and permits only an explicit Reload', async () => {
+  let fail!: (error: unknown) => void;
+  mock.save.mockReturnValueOnce(new Promise((_resolve, reject) => { fail = reject; }));
+  await mount();
+  fireEvent.click(screen.getByText('Save visitor settings'));
+  act(() => mock.changed!());
+  await act(async () => { fail(new VisitorPolicySaveError('confirmed', Error('Read unavailable'))); });
+  expect(screen.queryByText('Saving…')).not.toBeInTheDocument();
+  expect(screen.getByRole('status')).toHaveTextContent(/was saved.*could not be reloaded/);
+  expect(screen.getByText('Save visitor settings')).toBeDisabled();
+  expect(screen.getByText('Reload policy')).toBeEnabled();
+  act(() => { mock.changed!(); fireEvent.focus(window); });
+  expect(mock.load).toHaveBeenCalledOnce();
+  loaded = { ...loaded, writeRevision: 5, policy: { ...loaded.policy, revision: 5 } };
+  fireEvent.click(screen.getByText('Reload policy'));
+  await screen.findByLabelText('Approval policy');
+  await waitFor(() => expect(screen.getByText('Save visitor settings')).toBeEnabled());
+  expect(mock.save).toHaveBeenCalledOnce();
+});
+
+it('exits Saving on a rejected write without claiming success', async () => {
+  mock.save.mockRejectedValueOnce(Object.assign(Error('Rejected'), { code: 'functions/permission-denied' }));
+  await mount();
+  fireEvent.click(screen.getByText('Save visitor settings'));
+  await screen.findByText(/Community access denied/);
+  expect(screen.queryByText('Saving…')).not.toBeInTheDocument();
+  expect(screen.queryByText(/saved and reloaded/)).not.toBeInTheDocument();
+  expect(screen.getByText('Reload policy')).toBeEnabled();
+  expect(mock.save).toHaveBeenCalledOnce();
+});
+
+it('aborts an unmounted Save and cleans up deadlines without a late refresh', async () => {
+  vi.useFakeTimers();
+  let finish!: (value: VisitorPolicyResponse) => void;
+  mock.save.mockReturnValueOnce(new Promise<VisitorPolicyResponse>(resolve => { finish = resolve; }));
+  const view = render(<VisitorPolicySettings session={makeSession('admin')} />);
+  await act(async () => {});
+  fireEvent.click(screen.getByText('Save visitor settings'));
+  const signal = mock.save.mock.calls[0][4] as AbortSignal;
+  view.unmount();
+  await act(async () => {});
+  expect(signal.aborted).toBe(true);
+  expect(vi.getTimerCount()).toBe(0);
+  await act(async () => { finish(clone(loaded)); });
+  expect(mock.load).toHaveBeenCalledOnce();
+  expect(mock.save).toHaveBeenCalledOnce();
+});
+
 const row: Row = {
   id: 'visitor-1',
   data: {

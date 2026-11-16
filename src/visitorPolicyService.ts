@@ -11,11 +11,59 @@ import {
   type VisitorDecision,
 } from './visitorPolicy';
 
-async function adminScope(session: Session) {
+export const visitorPolicyReadTimeoutMs = 15_000;
+export const visitorPolicySaveTimeoutMs = 65_000;
+
+export class VisitorPolicySaveError extends Error {
+  constructor(readonly writeOutcome: 'confirmed' | 'unknown', readonly cause: unknown) {
+    super(writeOutcome === 'confirmed'
+      ? 'Visitor policy was saved, but the current settings could not be reloaded. Use Reload policy before saving again.'
+      : 'The save result could not be confirmed. The policy may have been saved. Use Reload policy before saving again; do not resubmit the save.');
+  }
+}
+
+/** Bound SDK waits without allowing timed-out preflight reads to send a later write. */
+export function visitorPolicyRequest<T>(
+  request: (signal: AbortSignal) => Promise<T>,
+  { signal, timeoutMs = visitorPolicyReadTimeoutMs, timeoutMessage =
+    'Visitor policy request timed out. Use Reload policy to refresh.' }: {
+    signal?: AbortSignal;
+    timeoutMs?: number;
+    timeoutMessage?: string;
+  } = {},
+): Promise<T> {
+  const controller = new AbortController();
+  const cancel = () => controller.abort(signal?.reason);
+  if (signal?.aborted) cancel();
+  else signal?.addEventListener('abort', cancel, { once: true });
+  const timer = setTimeout(() => controller.abort(Object.assign(Error(timeoutMessage), {
+    code: 'functions/deadline-exceeded',
+  })), timeoutMs);
+  let aborted = () => {};
+  return new Promise<T>((resolve, reject) => {
+    aborted = () => reject(controller.signal.reason);
+    if (controller.signal.aborted) { aborted(); return; }
+    controller.signal.addEventListener('abort', aborted, { once: true });
+    try {
+      controller.signal.throwIfAborted();
+      Promise.resolve(request(controller.signal)).then(resolve, reject);
+    } catch (error) {
+      reject(error);
+    }
+  }).finally(() => {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', cancel);
+    controller.signal.removeEventListener('abort', aborted);
+  });
+}
+
+async function adminScope(session: Session, signal?: AbortSignal) {
   if (session.role !== 'admin' || session.profile.role !== 'admin')
     throw Error('A Community Admin is required.');
   const id = assertScope(session);
-  const fresh = await currentAuthority(session);
+  const fresh = await visitorPolicyRequest(() => currentAuthority(session), {
+    signal, timeoutMessage: 'Community access verification timed out. Use Reload policy to refresh.',
+  });
   if (
     fresh.role !== 'admin' ||
     fresh.community.id !== id ||
@@ -24,30 +72,34 @@ async function adminScope(session: Session) {
     throw Error('Community access changed. Reload before continuing.');
   return id;
 }
-export async function loadVisitorPolicy(session: Session): Promise<VisitorPolicyResponse> {
-  const communityId = await adminScope(session);
-  const result = await call<VisitorPolicyResponse>('getCommunityVisitorPolicy', { communityId });
-  if (result.communityId !== communityId || assertScope(session) !== communityId)
-    throw Error('Policy is outside your community.');
-  if (
-    !Number.isSafeInteger(result.writeRevision) ||
-    result.writeRevision < 0 ||
-    !Number.isSafeInteger(result.serverTime) ||
-    result.pendingSchedule === undefined
-  ) {
-    throw Error(
-      'Visitor policy response is incomplete. Reload settings after the service is updated.',
-    );
-  }
-  return result;
+export function loadVisitorPolicy(session: Session, signal?: AbortSignal): Promise<VisitorPolicyResponse> {
+  return visitorPolicyRequest(async readSignal => {
+    const communityId = await adminScope(session, readSignal);
+    readSignal.throwIfAborted();
+    const result = await call<VisitorPolicyResponse>('getCommunityVisitorPolicy', { communityId });
+    if (result.communityId !== communityId || assertScope(session) !== communityId)
+      throw Error('Policy is outside your community.');
+    if (
+      !Number.isSafeInteger(result.writeRevision) ||
+      result.writeRevision < 0 ||
+      !Number.isSafeInteger(result.serverTime) ||
+      result.pendingSchedule === undefined
+    ) {
+      throw Error(
+        'Visitor policy response is incomplete. Reload settings after the service is updated.',
+      );
+    }
+    return result;
+  }, { signal });
 }
 export async function saveVisitorPolicy(
   session: Session,
   policy: VisitorPolicyInput,
   expectedRevision: number,
   effectiveAt?: number,
+  signal?: AbortSignal,
 ) {
-  const config = await loadVisitorPolicy(session);
+  const config = await loadVisitorPolicy(session, signal);
   const receivedAt = performance.now();
   if (policy.enabled && config.rolloutReady !== true)
     throw Error('Saving is blocked until visitor policy rollout is ready for this community.');
@@ -57,7 +109,7 @@ export async function saveVisitorPolicy(
     throw Object.assign(Error('Visitor policy changed. Reload before saving.'), {
       code: 'functions/aborted',
     });
-  const communityId = await adminScope(session);
+  const communityId = await adminScope(session, signal);
   if (config.communityId !== communityId) throw Error('Policy is outside your community.');
   if (
     effectiveAt != null &&
@@ -65,13 +117,24 @@ export async function saveVisitorPolicy(
       effectiveAt <= config.serverTime + Math.max(0, performance.now() - receivedAt))
   )
     throw Error('Choose a future policy effective time.');
-  await call('updateCommunityVisitorPolicy', {
-    communityId,
-    policy: { ...policyInput(policy), timeZone: config.timeZone },
-    expectedRevision,
-    ...(effectiveAt == null ? {} : { effectiveAt }),
-  });
-  return loadVisitorPolicy(session);
+  try {
+    await visitorPolicyRequest(() => call('updateCommunityVisitorPolicy', {
+      communityId,
+      policy: { ...policyInput(policy), timeZone: config.timeZone },
+      expectedRevision,
+      ...(effectiveAt == null ? {} : { effectiveAt }),
+    }), { signal });
+  } catch (error) {
+    const code = String((error as { code?: string })?.code).split('/').at(-1);
+    if (['aborted', 'invalid-argument', 'failed-precondition', 'permission-denied', 'unauthenticated',
+      'not-found', 'unimplemented', 'already-exists', 'out-of-range'].includes(code ?? '')) throw error;
+    throw new VisitorPolicySaveError('unknown', error);
+  }
+  try {
+    return await loadVisitorPolicy(session, signal);
+  } catch (error) {
+    throw new VisitorPolicySaveError('confirmed', error);
+  }
 }
 export async function decideVisitor(session: Session, row: Row, action: VisitorDecision) {
   const communityId = await adminScope(session);

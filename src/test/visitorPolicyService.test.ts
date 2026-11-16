@@ -1,7 +1,8 @@
-import { beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { makeSession } from './fixtures';
 import { decideVisitor, loadVisitorPolicy, saveVisitorPolicy,
-  loadVisitorDecisionContext, watchVisitorDecisionContext } from '../visitorPolicyService';
+  loadVisitorDecisionContext, watchVisitorDecisionContext,
+  visitorPolicyReadTimeoutMs, VisitorPolicySaveError } from '../visitorPolicyService';
 import type { VisitorPolicyResponse } from '../visitorPolicy';
 const m = vi.hoisted(() => ({ call: vi.fn(), authority: vi.fn(), get: vi.fn(), watch: vi.fn() }));
 vi.mock('../firebase', () => ({ call: m.call, firebase: () => ({ db: {} }) }));
@@ -37,6 +38,7 @@ beforeEach(() => {
     name === 'getCommunityVisitorPolicy' ? structuredClone(loaded) : {},
   );
 });
+afterEach(() => vi.useRealTimers());
 it('loads and saves enabled settings with the current contract, then re-reads confirmed policy', async () => {
   const session = makeSession('admin');
   expect(await loadVisitorPolicy(session)).toEqual(fixture);
@@ -222,4 +224,112 @@ it('watches policy and host updates and cleans up both subscriptions', () => {
   expect(changed).toHaveBeenCalledTimes(2);
   unsubscribe();
   expect(stop).toHaveBeenCalledTimes(2);
+});
+
+for (const stage of ['initial authority', 'write authority'] as const)
+  it(`times out stalled ${stage} without submitting a late write`, async () => {
+    vi.useFakeTimers();
+    const session = makeSession('admin');
+    let finish!: (value: typeof session) => void;
+    const stalled = new Promise<typeof session>(resolve => { finish = resolve; });
+    if (stage === 'write authority') m.authority.mockResolvedValueOnce(session);
+    m.authority.mockReturnValueOnce(stalled);
+    const pending = expect(saveVisitorPolicy(session, loaded.policy, 4))
+      .rejects.toMatchObject({ code: 'functions/deadline-exceeded' });
+    await vi.advanceTimersByTimeAsync(visitorPolicyReadTimeoutMs);
+    await pending;
+    finish(session);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(m.call.mock.calls.every(([name]) => name === 'getCommunityVisitorPolicy')).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+it('bounds a stalled preflight callable and does not continue to the write after a late read', async () => {
+  vi.useFakeTimers();
+  let finish!: (value: VisitorPolicyResponse) => void;
+  m.call.mockReturnValueOnce(new Promise<VisitorPolicyResponse>(resolve => { finish = resolve; }));
+  const pending = expect(saveVisitorPolicy(makeSession('admin'), loaded.policy, 4))
+    .rejects.toMatchObject({ code: 'functions/deadline-exceeded' });
+  await vi.advanceTimersByTimeAsync(visitorPolicyReadTimeoutMs);
+  await pending;
+  finish(loaded);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(m.call.mock.calls.map(([name]) => name)).toEqual(['getCommunityVisitorPolicy']);
+});
+
+for (const stage of ['authority', 'callable'] as const)
+  it(`reports a confirmed save when its reload ${stage} stalls`, async () => {
+    vi.useFakeTimers();
+    const session = makeSession('admin');
+    if (stage === 'authority')
+      m.authority.mockResolvedValueOnce(session).mockResolvedValueOnce(session)
+        .mockReturnValueOnce(new Promise(() => {}));
+    else {
+      let reads = 0;
+      m.call.mockImplementation(async name => {
+        if (name !== 'getCommunityVisitorPolicy') return {};
+        return ++reads === 1 ? loaded : new Promise(() => {});
+      });
+    }
+    const pending = expect(saveVisitorPolicy(session, loaded.policy, 4))
+      .rejects.toMatchObject({ writeOutcome: 'confirmed', message: expect.stringContaining('was saved') });
+    await vi.advanceTimersByTimeAsync(visitorPolicyReadTimeoutMs);
+    await pending;
+    expect(m.call.mock.calls.filter(([name]) => name === 'updateCommunityVisitorPolicy')).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+it('distinguishes a confirmed write followed by a rejected reload', async () => {
+  let reads = 0;
+  m.call.mockImplementation(async name => {
+    if (name !== 'getCommunityVisitorPolicy') return {};
+    if (++reads === 1) return loaded;
+    throw Object.assign(Error('Reload unavailable'), { code: 'functions/unavailable' });
+  });
+  await expect(saveVisitorPolicy(makeSession('admin'), loaded.policy, 4))
+    .rejects.toBeInstanceOf(VisitorPolicySaveError);
+  expect(m.call.mock.calls.filter(([name]) => name === 'updateCommunityVisitorPolicy')).toHaveLength(1);
+});
+
+it('reports an uncertain write timeout without retrying or continuing after late success', async () => {
+  vi.useFakeTimers();
+  let finish!: (value: unknown) => void;
+  m.call.mockImplementation(async name => name === 'getCommunityVisitorPolicy'
+    ? loaded : new Promise(resolve => { finish = resolve; }));
+  const pending = expect(saveVisitorPolicy(makeSession('admin'), loaded.policy, 4))
+    .rejects.toMatchObject({ writeOutcome: 'unknown', message: expect.stringContaining('may have been saved') });
+  await vi.advanceTimersByTimeAsync(visitorPolicyReadTimeoutMs);
+  await pending;
+  finish({});
+  await vi.advanceTimersByTimeAsync(0);
+  expect(m.call.mock.calls.map(([name]) => name)).toEqual([
+    'getCommunityVisitorPolicy', 'updateCommunityVisitorPolicy',
+  ]);
+});
+
+it.each(['permission-denied', 'invalid-argument', 'failed-precondition'])(
+  'preserves the backend %s rejection without claiming a successful write', async code => {
+    const error = Object.assign(Error('Rejected write'), { code: `functions/${code}` });
+    m.call.mockImplementation(async name => {
+      if (name === 'updateCommunityVisitorPolicy') throw error;
+      return loaded;
+    });
+    await expect(saveVisitorPolicy(makeSession('admin'), loaded.policy, 4)).rejects.toBe(error);
+    expect(m.call.mock.calls.map(([name]) => name)).toEqual([
+      'getCommunityVisitorPolicy', 'updateCommunityVisitorPolicy',
+    ]);
+  },
+);
+
+it('cancels preflight on screen unmount without sending a later mutation', async () => {
+  let finish!: (value: ReturnType<typeof makeSession>) => void;
+  const session = makeSession('admin'), controller = new AbortController();
+  m.authority.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+  const pending = expect(saveVisitorPolicy(session, loaded.policy, 4, undefined, controller.signal))
+    .rejects.toMatchObject({ name: 'AbortError' });
+  controller.abort();
+  await pending;
+  finish(session);
+  await Promise.resolve();
+  expect(m.call).not.toHaveBeenCalled();
 });

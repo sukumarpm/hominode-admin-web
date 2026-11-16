@@ -20,6 +20,8 @@ import {
   saveVisitorPolicy,
   visitorError,
   watchVisitorPolicy,
+  visitorPolicyRequest,
+  visitorPolicySaveTimeoutMs,
 } from './visitorPolicyService';
 import './visitorPolicy.css';
 
@@ -60,7 +62,24 @@ function PolicyEditor({
     generation = useRef(0),
     latest = useRef<VisitorPolicyResponse | null>(null),
     receivedAt = useRef(0),
-    refreshRef = useRef(() => {});
+    refreshRef = useRef(() => {}),
+    recoveryRequired = useRef(false),
+    requests = useRef(new Set<AbortController>());
+  useEffect(() => {
+    mounted.current = true;
+    const pending = requests.current;
+    return () => {
+      mounted.current = false;
+      pending.forEach(controller => controller.abort());
+      pending.clear();
+    };
+  }, []);
+  const read = useCallback(() => {
+    const controller = new AbortController();
+    requests.current.add(controller);
+    return visitorPolicyRequest(signal => load(session, signal), { signal: controller.signal })
+      .finally(() => requests.current.delete(controller));
+  }, [session, load]);
   const record = useCallback(
     (value: VisitorPolicyResponse) => {
       if (value.communityId !== session.community?.id)
@@ -87,16 +106,20 @@ function PolicyEditor({
       setPetStart(localSchedule(input.pets.restriction?.startAt, input.timeZone));
       setPetEnd(localSchedule(input.pets.restriction?.endAt, input.timeZone));
       dirty.current = false;
+      recoveryRequired.current = false;
       setConflict(false);
     },
     [record],
   );
   const reload = useCallback(async () => {
+    // Community snapshots can replace the Session while its own write is in
+    // flight. Queue that refresh without invalidating the active Save ticket.
+    if (locked.current) { refreshQueued.current = true; return; }
     const ticket = ++generation.current;
     fetching.current = true;
     setLoading(true);
     try {
-      const value = await load(session);
+      const value = await read();
       if (mounted.current && ticket === generation.current) {
         apply(value);
         setMessage('');
@@ -113,18 +136,20 @@ function PolicyEditor({
         }
       }
     }
-  }, [session, load, apply]);
+  }, [read, apply]);
   useEffect(() => {
-    mounted.current = true;
-    void reload();
+    if (!recoveryRequired.current) void reload();
     const refresh = () => {
+      // An uncertain write or a confirmed write with a failed reload needs an
+      // explicit read, never an automatic resubmission or silent reset.
+      if (recoveryRequired.current) return;
       if (locked.current || fetching.current) {
         refreshQueued.current = true;
         return;
       }
       if (dirty.current) {
         const ticket = ++generation.current;
-        void load(session)
+        void read()
           .then((value) => {
             if (!mounted.current || ticket !== generation.current) return;
             if (value.communityId !== session.community?.id)
@@ -164,12 +189,11 @@ function PolicyEditor({
     };
     document.addEventListener('visibilitychange', visible);
     return () => {
-      mounted.current = false;
       stop();
       window.removeEventListener('focus', refresh);
       document.removeEventListener('visibilitychange', visible);
     };
-  }, [reload, session, watch, load, record]);
+  }, [reload, session, watch, read, record]);
   useEffect(() => {
     if (!config?.pendingSchedule) return;
     const serverNow = config.serverTime + Math.max(0, performance.now() - receivedAt.current);
@@ -180,7 +204,7 @@ function PolicyEditor({
   function edit(next: VisitorPolicyInput) {
     dirty.current = true;
     setDraft(next);
-    setMessage('');
+    if (!recoveryRequired.current) setMessage('');
   }
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -194,6 +218,7 @@ function PolicyEditor({
     )
       return;
     const ticket = ++generation.current;
+    let controller: AbortController | undefined;
     try {
       const serverNow = config.serverTime + Math.max(0, performance.now() - receivedAt.current);
       const effectiveAt = scheduled
@@ -218,7 +243,13 @@ function PolicyEditor({
       locked.current = true;
       setBusy(true);
       setMessage('');
-      const value = await save(session, input, config.writeRevision, effectiveAt);
+      controller = new AbortController();
+      requests.current.add(controller);
+      const value = await visitorPolicyRequest(
+        signal => save(session, input, config.writeRevision, effectiveAt, signal),
+        { signal: controller.signal, timeoutMs: visitorPolicySaveTimeoutMs,
+          timeoutMessage: 'The save result could not be confirmed. The policy may have been saved. Use Reload policy before saving again; do not resubmit the save.' },
+      );
       if (mounted.current && ticket === generation.current) {
         apply(value);
         setMessage(
@@ -230,15 +261,23 @@ function PolicyEditor({
     } catch (error) {
       if (mounted.current && ticket === generation.current) {
         setMessage(visitorError(error));
-        if (String((error as { code?: string })?.code).endsWith('aborted')) setConflict(true);
+        if (controller) {
+          recoveryRequired.current = true;
+          setConflict(true);
+        }
       }
     } finally {
+      if (controller) {
+        controller.abort();
+        requests.current.delete(controller);
+      }
       locked.current = false;
-      if (mounted.current && ticket === generation.current) {
+      // Read generations must never prevent the Save control from unlocking.
+      if (mounted.current) {
         setBusy(false);
         if (refreshQueued.current) {
           refreshQueued.current = false;
-          refreshRef.current();
+          if (!recoveryRequired.current) refreshRef.current();
         }
       }
     }

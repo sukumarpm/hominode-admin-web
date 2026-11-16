@@ -94,7 +94,12 @@ export async function uploadEventImages(
   session: Session,
   eventId: string,
   files: File[],
+  onStage?: (stage: 'preparing' | 'uploading' | 'finalizing' | 'completed') => void,
 ) {
+  const setStage = (stage: 'preparing' | 'uploading' | 'finalizing' | 'completed') => {
+    try { onStage?.(stage); } catch { /* UI callbacks cannot change upload semantics. */ }
+  };
+  setStage('preparing');
   const s = await currentAuthority(session);
 
   if (s.role !== 'admin' || s.profile.role !== 'admin') {
@@ -152,6 +157,16 @@ export async function uploadEventImages(
     );
   }
 
+  const prepared = files.map((file) => {
+    const ext = allowed[file.type];
+    if (!ext || file.size <= 0 || file.size > 5 * 1024 * 1024) {
+      throw Error('Choose JPG, PNG or WebP images no larger than 5 MB each.');
+    }
+    return {
+      file,
+      storagePath: `event_images/${s.community.id}/${eventId}/${randomImageId()}.${ext}`,
+    };
+  });
   const uploaded: Array<{
     url: string;
     storagePath: string;
@@ -159,31 +174,30 @@ export async function uploadEventImages(
   }> = [];
 
   try {
-    for (const file of files) {
-      const ext = allowed[file.type];
-
-      if (!ext || file.size <= 0 || file.size > 5 * 1024 * 1024) {
-        throw Error('Choose JPG, PNG or WebP images no larger than 5 MB each.');
+    setStage('uploading');
+    const results: PromiseSettledResult<{ url: string; storagePath: string; name: string }>[] = [];
+    let next = 0;
+    const worker = async () => {
+      while (true) {
+        const index = next++;
+        if (index >= prepared.length) return;
+        const { file, storagePath } = prepared[index];
+        try {
+          const object = ref(firebase().storage, storagePath);
+          await uploadBytes(object, file, { contentType: file.type });
+          const url = await getDownloadURL(object);
+          results[index] = { status: 'fulfilled', value: { url, storagePath, name: file.name } };
+        } catch (reason) {
+          results[index] = { status: 'rejected', reason };
+        }
       }
-
-      const storagePath =
-        `event_images/${s.community.id}/${eventId}/${randomImageId()}.${ext}`;
-
-      const object = ref(firebase().storage, storagePath);
-
-      await uploadBytes(object, file, {
-        contentType: file.type,
-      });
-
-      const url = await getDownloadURL(object);
-
-      uploaded.push({
-        url,
-        storagePath,
-        name: file.name,
-      });
     }
+    await Promise.all(Array.from({ length: Math.min(3, prepared.length) }, worker));
+    for (const result of results) if (result.status === 'fulfilled') uploaded.push(result.value);
+    const failure = results.find((result) => result.status === 'rejected');
+    if (failure?.status === 'rejected') throw failure.reason;
 
+    setStage('finalizing');
     const allImages = [...existingImages, ...uploaded];
     const imageUrls = allImages.map((image) => image.url);
 
@@ -194,11 +208,12 @@ export async function uploadEventImages(
       updatedAt: serverTimestamp(),
     });
 
+    setStage('completed');
     return uploaded;
   } catch (error) {
     await Promise.allSettled(
-      uploaded.map((image) =>
-        deleteObject(ref(firebase().storage, image.storagePath)),
+      prepared.map(({ storagePath }) =>
+        deleteObject(ref(firebase().storage, storagePath)),
       ),
     );
 
@@ -276,17 +291,24 @@ export async function currentAuthority(s: Session) {
   if (!user || user.uid !== s.uid) throw Error('Sign in again to continue.');
   const token = await user.getIdTokenResult();
   if (token.signInProvider !== 'phone') throw Error('Phone verification is required.');
-  const profileDoc = await getDocFromServer(
-    doc(f.db, s.role === 'resident' ? 'users' : 'admins', s.uid),
-  );
+  const id = assertScope(s);
+  // Profile and community are independent server reads. Keep both on the
+  // server so revocation and tenant changes are still observed per action.
+  const [profileDoc, c] = await Promise.all([
+    getDocFromServer(doc(f.db, s.role === 'resident' ? 'users' : 'admins', s.uid)),
+    getDocFromServer(doc(f.db, 'communities', id)),
+  ]);
+  if (f.auth.currentUser !== user || f.auth.currentUser?.uid !== s.uid) {
+    throw Error('Sign in again to continue.');
+  }
+  if (!s.community || s.community.id !== id) throw Error('Your community changed. Sign in again.');
+  assertScope(s);
   const profile = parseProfile(
     s.uid,
     profileDoc.data() || {},
     s.role === 'resident' ? 'resident' : 'admin',
     user.phoneNumber || '',
   );
-  const id = assertScope(s);
-  const c = await getDocFromServer(doc(f.db, 'communities', id));
   const community = parseCommunity(id, c.data() || {});
   if (s.role === 'resident') {
     assertResident(profile, community);

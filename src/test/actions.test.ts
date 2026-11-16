@@ -5,6 +5,7 @@ import {
   createFacility,
   createVisitor,
   currentAuthority,
+  uploadEventImages,
   deleteFacilityImage,
   getCommunityPaymentConfig,
   parseCommunityPaymentConfig,
@@ -43,7 +44,7 @@ const m = vi.hoisted(() => ({
   call: vi.fn(),
 }));
 vi.mock('../firebase', () => ({
-  firebase: () => ({ auth: { currentUser: m.user }, db: {}, storage: {} }),
+  firebase: () => ({ auth: { get currentUser() { return m.user; } }, db: {}, storage: {} }),
   call: m.call,
 }));
 vi.mock('firebase/firestore', () => ({
@@ -644,6 +645,149 @@ it('revalidates current admin assignments before mutations', async () => {
   };
   m.profile = { ...adminData, authorizedCommunityIds: ['community-2'] };
   await expect(currentAuthority(session)).rejects.toThrow('Community access revoked');
+});
+it('starts profile and community authority reads together and rejects auth changes during them', async () => {
+  const session = makeSession('admin');
+  const admin = adminPaymentSession();
+  m.get.mockClear();
+  const pending: Array<(value: { exists: () => boolean; data: () => Data }) => void> = [];
+  m.get.mockImplementation(() => new Promise((resolve) => pending.push(resolve)));
+  const result = currentAuthority(admin);
+  while (m.get.mock.calls.length < 2) await Promise.resolve();
+  expect(m.get).toHaveBeenCalledTimes(2);
+  const profile = { ...adminData };
+  const community = { name: 'Green Valley', slug: 'green-valley', isActive: true };
+  pending[0]({ exists: () => true, data: () => profile });
+  m.user = { ...m.user!, uid: 'different-user' };
+  pending[1]({ exists: () => true, data: () => community });
+  await expect(result).rejects.toThrow('Sign in again');
+  expect(session.community?.id).toBe('community-1');
+});
+it('measures two independent authority reads under controlled server latency', async () => {
+  const admin = adminPaymentSession();
+  const delayMs = 25;
+  m.get.mockImplementation(async (path: string) => {
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    return {
+      exists: () => true,
+      data: () => path.startsWith('communities/')
+        ? { name: 'Green Valley', slug: 'green-valley', isActive: true }
+        : adminData,
+    };
+  });
+  const start = performance.now();
+  await currentAuthority(admin);
+  const elapsed = performance.now() - start;
+  expect(m.get).toHaveBeenCalledTimes(2);
+  console.info(`[synthetic authority] reads=2 delayEachMs=${delayMs} parallelMs=${elapsed.toFixed(1)} sequentialCounterfactualMs=${(2 * delayMs).toFixed(1)}`);
+});
+it('rejects either failed authority read and detects a changed selected community', async () => {
+  const admin = adminPaymentSession();
+  m.get.mockImplementation(async (path: string) => {
+    if (path.startsWith('communities/')) throw Error('community read failed');
+    return { exists: () => true, data: () => adminData };
+  });
+  await expect(currentAuthority(admin)).rejects.toThrow('community read failed');
+  m.get.mockImplementation(async (path: string) => {
+    if (!path.startsWith('communities/')) throw Error('profile read failed');
+    return { exists: () => true, data: () => ({ name: 'Green Valley', slug: 'green-valley', isActive: true }) };
+  });
+  await expect(currentAuthority(admin)).rejects.toThrow('profile read failed');
+  const releases: Array<(value: { exists: () => boolean; data: () => Data }) => void> = [];
+  m.get.mockClear();
+  m.get.mockImplementation(() => new Promise((resolve) => releases.push(resolve)));
+  const switched = currentAuthority(admin);
+  while (m.get.mock.calls.length < 2) await Promise.resolve();
+  expect(m.get).toHaveBeenCalledTimes(2);
+  admin.community = { ...admin.community!, id: 'community-2' };
+  releases[0]({ exists: () => true, data: () => adminData });
+  releases[1]({ exists: () => true, data: () => ({ name: 'Green Valley', slug: 'green-valley', isActive: true }) });
+  await expect(switched).rejects.toThrow('community changed');
+});
+describe('Admin event image upload', () => {
+  function setupEventRead() {
+    const admin = adminPaymentSession();
+    m.get.mockImplementation(async (path: string) => ({
+      exists: () => true,
+      data: () => path.startsWith('communities/')
+        ? { name: 'Green Valley', slug: 'green-valley', isActive: true }
+        : path.startsWith('events_announcements/')
+          ? { communityId: 'community-1', images: [] }
+          : adminData,
+    }));
+    return admin;
+  }
+  const files = (count: number) => Array.from({ length: count }, (_, index) =>
+    new File([`image-${index}`], `image-${index}.jpg`, { type: 'image/jpeg' }),
+  );
+  it.each([1, 3, 6])('uploads %i images with concurrency capped at three', async (count) => {
+    const admin = setupEventRead();
+    const selected = files(count);
+    let active = 0, maximum = 0;
+    m.upload.mockImplementation(async () => {
+      active++; maximum = Math.max(maximum, active);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      active--;
+    });
+    const sequentialStart = performance.now();
+    for (const file of selected) {
+      const object = m.storageRef({}, `synthetic-sequential/${file.name}`);
+      await m.upload(object, file, { contentType: file.type });
+      await m.downloadUrl(object);
+    }
+    const sequentialMs = performance.now() - sequentialStart;
+    active = 0; maximum = 0;
+    const start = performance.now();
+    let transferStart = 0, transferMs = 0;
+    const result = await uploadEventImages(admin, 'event-1', selected, (stage) => {
+      if (stage === 'uploading') transferStart = performance.now();
+      if (stage === 'finalizing') transferMs = performance.now() - transferStart;
+    });
+    const elapsed = performance.now() - start;
+    expect(result).toHaveLength(count);
+    expect(result.map((image) => image.name)).toEqual(selected.map((file) => file.name));
+    expect(maximum).toBeLessThanOrEqual(3);
+    expect(m.update).toHaveBeenCalledTimes(1);
+    console.info(`[synthetic upload] count=${count} sequentialBaselineMs=${sequentialMs.toFixed(1)} parallelTransfersMs=${transferMs.toFixed(1)} endToEndMs=${elapsed.toFixed(1)} maxConcurrent=${maximum}`);
+  });
+  it('preserves input order when independent uploads complete out of order', async () => {
+    const admin = setupEventRead();
+    m.upload.mockImplementation(async (_path: string, file: File) => {
+      const delay = file.name === 'image-0.jpg' ? 40 : file.name === 'image-1.jpg' ? 20 : 5;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    });
+    const chosen = files(3);
+    const result = await uploadEventImages(admin, 'event-1', chosen);
+    expect(result.map((image) => image.name)).toEqual(chosen.map((file) => file.name));
+  });
+  it('waits for in-flight uploads, cleans all paths after partial failure, and allows retry', async () => {
+    const admin = setupEventRead();
+    const stages: string[] = [];
+    let call = 0;
+    m.upload.mockImplementation(async () => {
+      const current = call++;
+      await new Promise((resolve) => setTimeout(resolve, current === 0 ? 5 : 30));
+      if (current === 0) throw Error('synthetic upload failure');
+    });
+    await expect(uploadEventImages(admin, 'event-1', files(3), (stage) => stages.push(stage)))
+      .rejects.toThrow('synthetic upload failure');
+    expect(stages).toEqual(['preparing', 'uploading']);
+    expect(m.deleteObject).toHaveBeenCalledTimes(3);
+    expect(m.update).not.toHaveBeenCalled();
+    m.upload.mockResolvedValue(undefined);
+    stages.length = 0;
+    await expect(uploadEventImages(admin, 'event-1', files(3), (stage) => stages.push(stage)))
+      .resolves.toHaveLength(3);
+    expect(stages).toEqual(['preparing', 'uploading', 'finalizing', 'completed']);
+    expect(m.update).toHaveBeenCalledTimes(1);
+  });
+  it('rejects invalid selections before uploading any image', async () => {
+    const admin = setupEventRead();
+    await expect(uploadEventImages(admin, 'event-1', [
+      new File(['bad'], 'bad.gif', { type: 'image/gif' }),
+    ])).rejects.toThrow('Choose JPG, PNG or WebP');
+    expect(m.upload).not.toHaveBeenCalled();
+  });
 });
 it('rejects invalid receipt files without uploading', async () => {
   await expect(

@@ -1264,6 +1264,11 @@ function ScopedModule({
 function CreateForm({ s, module, onClose }: { s: Session; module: Module; onClose: () => void }) {
   const [busy, setBusy] = useState(false),
     [error, setError] = useState('');
+  const submitInFlight = useRef(false);
+  const createdEventId = useRef<string | null>(null);
+  const [uploadStage, setUploadStage] = useState<
+    'preparing' | 'uploading' | 'finalizing' | 'completed' | null
+  >(null);
 
   const [eventImageFiles, setEventImageFiles] = useState<File[]>([]);
   const [eventImagePreviews, setEventImagePreviews] = useState<string[]>([]);
@@ -1280,6 +1285,8 @@ function CreateForm({ s, module, onClose }: { s: Session; module: Module; onClos
   }, [eventImageFiles, module]);
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    if (submitInFlight.current) return;
+    submitInFlight.current = true;
     setBusy(true);
     setError('');
     const form = new FormData(e.currentTarget);
@@ -1291,7 +1298,21 @@ function CreateForm({ s, module, onClose }: { s: Session; module: Module; onClos
       else if (module === 'complaints') await createComplaint(s, data);
       else if (module === 'notices') await publishNotice(s, data);
       else if (module === 'events') {
-        const eventRef = await createEvent(s, {
+        setUploadStage('preparing');
+        const retryingExistingEvent = createdEventId.current !== null;
+        const eventRef = createdEventId.current
+          ? { id: createdEventId.current }
+          : await createEvent(s, {
+              title: data.title,
+              category: data.category,
+              description: data.description,
+              eventDate: data.eventDate,
+              time: data.time,
+              location: data.location,
+              totalCapacity: data.totalCapacity ? Number(data.totalCapacity) : undefined,
+            });
+        createdEventId.current = eventRef.id;
+        if (retryingExistingEvent) await updateEvent(s, eventRef.id, {
           title: data.title,
           category: data.category,
           description: data.description,
@@ -1302,14 +1323,20 @@ function CreateForm({ s, module, onClose }: { s: Session; module: Module; onClos
         });
 
         if (eventImages.length) {
-          await uploadEventImages(s, eventRef.id, eventImages);
+          await uploadEventImages(s, eventRef.id, eventImages, setUploadStage);
+        } else {
+          setUploadStage('completed');
         }
       }
       onClose();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Unable to save.');
+      const message = e instanceof Error ? e.message : 'Unable to save.';
+      setError(module === 'events' && createdEventId.current
+        ? `The event was created, but its photos were not fully submitted. Retry to attach them. ${message}`
+        : message);
     } finally {
       setBusy(false);
+      submitInFlight.current = false;
     }
   }
   return (
@@ -1324,6 +1351,7 @@ function CreateForm({ s, module, onClose }: { s: Session; module: Module; onClos
               : 'Raise a Request'
       }
       onClose={onClose}
+      dismissible={!busy}
     >
       <form onSubmit={submit}>
         <fieldset disabled={busy}>
@@ -1537,9 +1565,11 @@ function CreateForm({ s, module, onClose }: { s: Session; module: Module; onClos
               {error}
             </p>
           )}
-          <button className="primary" type="submit">
+          <button className="primary" type="submit" disabled={busy}>
             {busy
-              ? 'Saving…'
+              ? uploadStage
+                ? `${uploadStage[0].toUpperCase()}${uploadStage.slice(1)}…`
+                : 'Saving…'
               : module === 'notices'
                 ? 'Publish to community'
                 : module === 'events'
@@ -1594,6 +1624,10 @@ function ContentEditForm({
   const d = row.data;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const submitInFlight = useRef(false);
+  const [uploadStage, setUploadStage] = useState<
+    'preparing' | 'uploading' | 'finalizing' | 'completed' | null
+  >(null);
   const [newImages, setNewImages] = useState<File[]>([]);
   const [previews, setPreviews] = useState<string[]>([]);
 
@@ -1637,6 +1671,8 @@ function ContentEditForm({
 
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    if (submitInFlight.current) return;
+    submitInFlight.current = true;
     setBusy(true);
     setError('');
 
@@ -1644,6 +1680,7 @@ function ContentEditForm({
 
     try {
       if (module === 'events') {
+        setUploadStage('preparing');
         await updateEvent(s, row.id, {
           title: values.title,
           category: values.category,
@@ -1656,7 +1693,9 @@ function ContentEditForm({
         });
 
         if (newImages.length) {
-          await uploadEventImages(s, row.id, newImages);
+          await uploadEventImages(s, row.id, newImages, setUploadStage);
+        } else {
+          setUploadStage('completed');
         }
       } else {
         await updateAnnouncement(s, row.id, {
@@ -1674,14 +1713,22 @@ function ContentEditForm({
 
       onSaved();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Unable to save changes.');
+      const message = e instanceof Error ? e.message : 'Unable to save changes.';
+      setError(module === 'events' && uploadStage && uploadStage !== 'completed'
+        ? `Event details were saved, but photo submission did not complete. ${message}`
+        : message);
     } finally {
       setBusy(false);
+      submitInFlight.current = false;
     }
   }
 
   return (
-    <Modal title={module === 'events' ? 'Edit Event' : 'Edit Announcement'} onClose={onClose}>
+    <Modal
+      title={module === 'events' ? 'Edit Event' : 'Edit Announcement'}
+      onClose={onClose}
+      dismissible={!busy}
+    >
       <form onSubmit={submit}>
         <fieldset disabled={busy}>
           <label>
@@ -1929,12 +1976,16 @@ function ContentEditForm({
           )}
 
           <div className="button-row">
-            <button type="button" onClick={onClose}>
+            <button type="button" onClick={onClose} disabled={busy}>
               Cancel
             </button>
 
-            <button className="primary" type="submit">
-              {busy ? 'Saving…' : 'Save changes'}
+            <button className="primary" type="submit" disabled={busy}>
+              {busy
+                ? uploadStage
+                  ? `${uploadStage[0].toUpperCase()}${uploadStage.slice(1)}…`
+                  : 'Saving…'
+                : 'Save changes'}
             </button>
           </div>
         </fieldset>

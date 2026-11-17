@@ -15,6 +15,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { useMemo } from 'react';
 import { Card, Pill, State } from './components';
 import { safeUrl, titleOf, useRows, type Resource } from './data';
 import { amount, dateLabel, dateOf, first, money, status, type Row, type Session } from './models';
@@ -200,31 +201,81 @@ function AdminDashboard({ s }: { s: Session }) {
     complaints = useRows(s, 'complaints'),
     residents = useRows(s, 'residents'),
     bookings = useRows(s, 'bookings');
-  const total = (states: string[]) =>
-    bills.rows
-      .filter((r) => states.includes(status(r.data)))
-      .reduce((sum, r) => sum + amount(r.data), 0);
-  const paid = total(['paid', 'settled', 'approved']),
-    pending = total(['pending', 'due', 'unpaid']),
-    overdue = total(['overdue']);
-  const occupied = units.rows.filter((r) => status(r.data) === 'occupied').length;
-  const vacant = units.rows.filter((r) => status(r.data) === 'vacant').length;
-  const reserved = units.rows.filter((r) => status(r.data) === 'reserved').length;
-  const maintenance = units.rows.filter((r) => status(r.data) === 'maintenance').length;
+  const billSummary = useMemo(() => {
+    let paid = 0;
+    let pending = 0;
+    let overdue = 0;
+    for (const bill of bills.rows) {
+      const billStatus = status(bill.data);
+      if (['paid', 'settled', 'approved'].includes(billStatus)) paid += amount(bill.data);
+      else if (['pending', 'due', 'unpaid'].includes(billStatus)) pending += amount(bill.data);
+      else if (billStatus === 'overdue') overdue += amount(bill.data);
+    }
+    return { paid, pending, overdue };
+  }, [bills.rows]);
+  const { paid, pending, overdue } = billSummary;
 
-  const totalUnits = Math.max(units.rows.length, 1);
+  const unitSummary = useMemo(() => {
+    let occupied = 0;
+    let vacant = 0;
+    let reserved = 0;
+    let maintenance = 0;
+    for (const unit of units.rows) {
+      switch (status(unit.data)) {
+        case 'occupied':
+          occupied += 1;
+          break;
+        case 'vacant':
+          vacant += 1;
+          break;
+        case 'reserved':
+          reserved += 1;
+          break;
+        case 'maintenance':
+          maintenance += 1;
+          break;
+      }
+    }
+    const totalUnits = Math.max(units.rows.length, 1);
+    const occupiedEnd = (occupied / totalUnits) * 100;
+    const vacantEnd = occupiedEnd + (vacant / totalUnits) * 100;
+    const reservedEnd = vacantEnd + (reserved / totalUnits) * 100;
+    const maintenanceEnd = reservedEnd + (maintenance / totalUnits) * 100;
+    const percent = units.rows.length ? Math.round((occupied / units.rows.length) * 100) : 0;
+    return {
+      occupied,
+      vacant,
+      reserved,
+      maintenance,
+      occupiedEnd,
+      vacantEnd,
+      reservedEnd,
+      maintenanceEnd,
+      percent,
+    };
+  }, [units.rows]);
+  const {
+    occupied,
+    vacant,
+    reserved,
+    maintenance,
+    occupiedEnd,
+    vacantEnd,
+    reservedEnd,
+    maintenanceEnd,
+    percent,
+  } = unitSummary;
 
-  const occupiedEnd = (occupied / totalUnits) * 100;
-  const vacantEnd = occupiedEnd + (vacant / totalUnits) * 100;
-  const reservedEnd = vacantEnd + (reserved / totalUnits) * 100;
-  const maintenanceEnd = reservedEnd + (maintenance / totalUnits) * 100;
-
-  const percent = units.rows.length ? Math.round((occupied / units.rows.length) * 100) : 0;
+  const activityRows = useMemo(
+    () =>
+      [...visitors.rows, ...complaints.rows].sort(
+        (a, b) =>
+          (dateOf(b.data.createdAt)?.getTime() || 0) - (dateOf(a.data.createdAt)?.getTime() || 0),
+      ),
+    [visitors.rows, complaints.rows],
+  );
   const activity: Resource = {
-    rows: [...visitors.rows, ...complaints.rows].sort(
-      (a, b) =>
-        (dateOf(b.data.createdAt)?.getTime() || 0) - (dateOf(a.data.createdAt)?.getTime() || 0),
-    ),
+    rows: activityRows,
     loading: visitors.loading || complaints.loading,
     error: visitors.error || complaints.error,
   };

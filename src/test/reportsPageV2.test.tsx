@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BillingV2FinancialReport, DetailedFinancialReport } from '../actions';
 import type { Session } from '../models';
 import { ReportsPage } from '../pages';
@@ -8,6 +8,9 @@ import { makeSession } from './fixtures';
 
 const reportActions = vi.hoisted(() => ({ getReport: vi.fn(), getDetailedReport: vi.fn(), getResidents: vi.fn() }));
 const rowMocks = vi.hoisted(() => ({ useRows: vi.fn() }));
+const pdfMocks = vi.hoisted(() => ({ create: vi.fn() }));
+
+vi.mock('../financialReportPdf', () => ({ createFinancialReportPdf: pdfMocks.create }));
 
 vi.mock('../actions', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../actions')>();
@@ -94,10 +97,13 @@ function deferred<T>() {
 }
 
 beforeEach(() => {
+  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, blob: async () => new Blob(['logo']) })));
   reportActions.getReport.mockReset();
   reportActions.getDetailedReport.mockReset();
   reportActions.getResidents.mockReset();
   rowMocks.useRows.mockReset();
+  pdfMocks.create.mockReset();
+  pdfMocks.create.mockResolvedValue({ blob: new Blob(['%PDF-'], { type: 'application/pdf' }), pageCount: 1 });
   rowMocks.useRows.mockImplementation((_session: Session, module: string) => ({
     rows: Array.from(
       {
@@ -110,6 +116,8 @@ beforeEach(() => {
     error: '',
   }));
 });
+
+afterEach(() => vi.unstubAllGlobals());
 
 function detailedReport(communityId: string): DetailedFinancialReport {
   return {
@@ -163,9 +171,85 @@ describe('ReportsPage Billing V2 financial report', () => {
     expect(reportActions.getDetailedReport).toHaveBeenCalledWith(session, expect.objectContaining({fromMs: 0, toMs: 253402300799999}), undefined);
   });
 
+  it('downloads a 20-page PDF without a warning and confirms the actual page count above the threshold', async () => {
+    const session = makeSession('admin');
+    reportActions.getReport.mockResolvedValue(financialReport(session.community!.id, currentLocalMonth()));
+    reportActions.getDetailedReport.mockResolvedValue(detailedReport(session.community!.id));
+    const oldCreateObjectURL = Object.getOwnPropertyDescriptor(URL, 'createObjectURL');
+    const createObjectURL = vi.fn(() => 'blob:financial-pdf');
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    try {
+      const { unmount } = renderReports(session);
+      fireEvent.click(screen.getByRole('button', { name: 'Generate Report' }));
+      await screen.findByRole('button', { name: 'Export PDF' });
+      pdfMocks.create.mockResolvedValueOnce({ blob: new Blob(['twenty'], { type: 'application/pdf' }), pageCount: 20 });
+      fireEvent.click(screen.getByRole('button', { name: 'Export PDF' }));
+      await waitFor(() => expect(click).toHaveBeenCalledTimes(1));
+      expect(fetch).toHaveBeenCalledWith('/images/hominode-report-logo.png');
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+
+      pdfMocks.create.mockResolvedValueOnce({ blob: new Blob(['twenty-one'], { type: 'application/pdf' }), pageCount: 21 });
+      fireEvent.click(screen.getByRole('button', { name: 'Export PDF' }));
+      expect(await screen.findByRole('dialog', { name: 'Large PDF report' })).toHaveTextContent('21 pages');
+      expect(pdfMocks.create).toHaveBeenCalledTimes(2);
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      expect(click).toHaveBeenCalledTimes(1);
+
+      pdfMocks.create.mockResolvedValueOnce({ blob: new Blob(['twenty-one-again'], { type: 'application/pdf' }), pageCount: 21 });
+      fireEvent.click(screen.getByRole('button', { name: 'Export PDF' }));
+      expect(await screen.findByRole('dialog', { name: 'Large PDF report' })).toHaveTextContent('21 pages');
+      expect(pdfMocks.create).toHaveBeenCalledTimes(3);
+      fireEvent.click(screen.getByRole('button', { name: 'Download PDF anyway' }));
+      await waitFor(() => expect(click).toHaveBeenCalledTimes(2));
+      expect(pdfMocks.create).toHaveBeenCalledTimes(3);
+      unmount();
+    } finally {
+      if (oldCreateObjectURL) Object.defineProperty(URL, 'createObjectURL', oldCreateObjectURL); else Reflect.deleteProperty(URL, 'createObjectURL');
+      click.mockRestore();
+    }
+  });
+
+  it('prevents duplicate PDF generation and allows retry after a generation failure', async () => {
+    const session = makeSession('admin');
+    reportActions.getReport.mockResolvedValue(financialReport(session.community!.id, currentLocalMonth()));
+    reportActions.getDetailedReport.mockResolvedValue(detailedReport(session.community!.id));
+    const oldCreateObjectURL = Object.getOwnPropertyDescriptor(URL, 'createObjectURL');
+    const createObjectURL = vi.fn(() => 'blob:financial-pdf');
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    let finish!: (value: { blob: Blob; pageCount: number }) => void;
+    try {
+      renderReports(session);
+      fireEvent.click(screen.getByRole('button', { name: 'Generate Report' }));
+      await screen.findByRole('button', { name: 'Export PDF' });
+      pdfMocks.create.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+      const button = screen.getByRole('button', { name: 'Export PDF' });
+      fireEvent.click(button);
+      fireEvent.click(button);
+      await waitFor(() => expect(pdfMocks.create).toHaveBeenCalledTimes(1));
+      expect(screen.getByRole('button', { name: 'Generating PDF…' })).toBeDisabled();
+      finish({ blob: new Blob(['%PDF-'], { type: 'application/pdf' }), pageCount: 1 });
+      await waitFor(() => expect(click).toHaveBeenCalledTimes(1));
+
+      pdfMocks.create.mockRejectedValueOnce(new Error('synthetic failure'));
+      fireEvent.click(screen.getByRole('button', { name: 'Export PDF' }));
+      expect(await screen.findByRole('alert')).toHaveTextContent('PDF generation failed');
+      pdfMocks.create.mockResolvedValueOnce({ blob: new Blob(['retry'], { type: 'application/pdf' }), pageCount: 1 });
+      fireEvent.click(screen.getByRole('button', { name: 'Export PDF' }));
+      await waitFor(() => expect(click).toHaveBeenCalledTimes(2));
+    } finally {
+      if (oldCreateObjectURL) Object.defineProperty(URL, 'createObjectURL', oldCreateObjectURL); else Reflect.deleteProperty(URL, 'createObjectURL');
+      click.mockRestore();
+    }
+  });
+
   it('exports canonical resident totals and receipt timestamps for all residents and a selected deleted resident', async () => {
     const session = makeSession('admin');
     const response = detailedReport(session.community!.id);
+    response.rows[0].identity.name = '=SUM(1,1)';
+    response.rows[0].bills[0].chargeCategory = 'Maintenance';
+    response.coverageWarnings = ['Some legacy payments need reconciliation.'];
     // A retained resident can have no bills in the selected range and still
     // have receipt activity and available credit that must survive export.
     response.rows[1].payments = [{transactionId: 'old-bill-payment', amountMinor: 0, receivedAmountMinor: 18000, method: 'cash', reference: 'FORMER-RECEIPT', receivedAtMs: 1760000000000, createdAtMs: 1760000001000}];
@@ -189,11 +273,25 @@ describe('ReportsPage Billing V2 financial report', () => {
     try {
       fireEvent.click(screen.getByRole('button', {name: 'Export CSV'}));
       const allCsv = await readCsv(blobs[0]);
-      expect(allCsv).toContain('"Total billed minor","30000"');
-      expect(allCsv).toContain('"Total paid minor","20000"');
-      expect(allCsv).toContain('"Outstanding minor","10000"');
-      expect(allCsv).toContain('"Former Resident","+639172222222","B-02","Deleted","20000","15000","0","3000","5000"');
-      expect(allCsv).toContain('"old-bill-payment","18000","cash","FORMER-RECEIPT","2025-10-09T08:53:20.000Z","2025-10-09T08:53:21.000Z"');
+      expect(allCsv).toContain('"Record type","Community","Report from","Report to","Generated at"');
+      expect(allCsv).toContain('"allocation"');
+      expect(allCsv).toContain('"receipt"');
+      expect(allCsv).toContain('"Maintenance"');
+      expect(allCsv).toContain('"coverage_warning"');
+      expect(allCsv).toContain('"100.00"');
+      expect(allCsv).toContain('"50.00"');
+      expect(allCsv).toContain('"\'=SUM(1,1)"');
+      expect(allCsv).toContain('"old-bill-payment"');
+      expect(allCsv).toContain('"FORMER-RECEIPT"');
+      expect(allCsv).not.toContain('"Total billed minor"');
+      fireEvent.click(screen.getByLabelText('Privacy-safe notice export'));
+      fireEvent.click(screen.getByRole('button', {name: 'Export CSV'}));
+      const noticeCsv = await readCsv(blobs[1]);
+      expect(noticeCsv).toContain('"A-01"');
+      expect(noticeCsv).not.toContain('+639172222222');
+      expect(noticeCsv).not.toContain('FORMER-RECEIPT');
+      expect(noticeCsv).not.toContain('old-bill-payment');
+      fireEvent.click(screen.getByLabelText('Privacy-safe notice export'));
       fireEvent.change(screen.getByLabelText('Report Type'), {target: {value: 'individual'}});
       expect(screen.queryByRole('button', {name: 'Generate Report'})).not.toBeInTheDocument();
       await screen.findByRole('option', {name: 'Former Resident · +639172222222 · B-02 · Deleted'});
@@ -206,10 +304,8 @@ describe('ReportsPage Billing V2 financial report', () => {
       expect(screen.queryByRole('heading', {name: 'Active Resident (Active)'})).not.toBeInTheDocument();
       await screen.findByRole('heading', {name: 'Former Resident (Deleted)'});
       fireEvent.click(screen.getByRole('button', {name: 'Export CSV'}));
-      const individualCsv = await readCsv(blobs[1]);
-      expect(individualCsv).toContain('"Total billed minor","20000"');
-      expect(individualCsv).toContain('"Total paid minor","15000"');
-      expect(individualCsv).toContain('"Available credit minor","3000"');
+      const individualCsv = await readCsv(blobs[2]);
+      expect(individualCsv).toContain('"receipt"');
       expect(individualCsv).toContain('FORMER-RECEIPT');
       expect(individualCsv).not.toContain('Active Resident');
     } finally {

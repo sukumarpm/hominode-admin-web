@@ -5387,6 +5387,11 @@ dialog.payment-details-dialog .payment-review-controls textarea {
   max-width: 100%;
 }
 
+.report-filters { align-items: end; gap: 1rem; flex-wrap: wrap; }
+.report-filters label { display: flex; align-items: center; gap: .45rem; }
+.report-filters label:has(span) { display: grid; gap: .35rem; }
+.dues-table td, .dues-table th { white-space: nowrap; }
+
 .financial-report-header,
 .community-overview-header {
   display: flex;

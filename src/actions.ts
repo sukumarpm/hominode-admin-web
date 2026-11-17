@@ -1507,7 +1507,7 @@ export async function getBillingV2FinancialReport(
 export interface DetailedFinancialReportRow {
   residentId: string;
   identity: { name: string; phone: string; unit: string; residentType: string; deleted: boolean; completedAtMs?: number | null };
-  bills: Array<{ billId: string; description: string; billingPeriod: string; amountMinor: number; paidMinor: number; outstandingMinor: number; status: string; settlements: Array<{ transactionId: string; amountMinor: number; receivedAmountMinor: number; method: string; reference: string | null; receivedAtMs: number; createdAtMs: number }> }>;
+  bills: Array<{ billId: string; chargeCategory?: string; description: string; billingPeriod: string; amountMinor: number; paidMinor: number; creditAppliedMinor?: number; outstandingMinor: number; status: string; settlements: Array<{ transactionId: string; amountMinor: number; receivedAmountMinor: number; method: string; reference: string | null; receivedAtMs: number; createdAtMs: number }> }>;
   payments: Array<{ transactionId: string; amountMinor: number; receivedAmountMinor: number; method: string; reference: string | null; receivedAtMs: number; createdAtMs: number }>;
   billedMinor: number;
   paidMinor: number;

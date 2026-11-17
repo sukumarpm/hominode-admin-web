@@ -2567,6 +2567,14 @@ function ReportData({ s }: { s: Session }) {
   const [detailedReport, setDetailedReport] = useState<DetailedFinancialReport | null>(null);
   const [detailedLoading, setDetailedLoading] = useState(false);
   const [detailedError, setDetailedError] = useState('');
+  const [pdfGenerating, setPdfGenerating] = useState(false);
+  const [pdfError, setPdfError] = useState('');
+  const [pendingPdf, setPendingPdf] = useState<{ blob: Blob; filename: string; pages: number } | null>(null);
+  const pdfGenerationInFlight = useRef(false);
+  const [duesOnly, setDuesOnly] = useState(false);
+  const [duesSearch, setDuesSearch] = useState('');
+  const [chargeFilter, setChargeFilter] = useState('all');
+  const [publicNotice, setPublicNotice] = useState(false);
 
   useEffect(() => {
     residentRequest.current++;
@@ -2622,36 +2630,88 @@ function ReportData({ s }: { s: Session }) {
   );
   const selectedResident = residentOptions.find((row) => row.residentId === selectedResidentId);
   const selectedRow = detailRows.find((row) => row.residentId === selectedResidentId);
-  const visibleRows = reportMode === 'all' ? detailRows : selectedRow ? [selectedRow] : [];
+  const reportRows = reportMode === 'all' ? detailRows : selectedRow ? [selectedRow] : [];
+  const filteredReportRows = reportRows.map((row) => ({...row, bills: row.bills.filter((bill) =>
+    (!duesOnly || bill.outstandingMinor > 0) &&
+    (chargeFilter === 'all' || (bill.chargeCategory || 'Other / Unclassified') === chargeFilter) &&
+    `${row.identity.name} ${row.identity.unit} ${bill.description} ${bill.billingPeriod}`.toLowerCase().includes(duesSearch.toLowerCase()),
+  )})).filter((row) => !duesOnly || row.bills.length > 0);
+  const visibleRows = filteredReportRows;
+  const chargeCategories = [...new Set(reportRows.flatMap((row) => row.bills.map((bill) => bill.chargeCategory || 'Other / Unclassified')))];
 
   function exportDetailedCsv() {
     if (!detailedReport) return;
-    const rows: string[][] = [
-      ['Report period', fromDate || 'All history', toDate || 'Present and future'],
-      ...(detailedReport.coverageWarnings ?? []).map((warning) => ['Coverage warning', warning]),
-      ['Total billed minor', String(reportMode === 'all' ? detailedReport.totals.billedMinor : visibleRows[0]?.billedMinor ?? 0)],
-      ['Total paid minor', String(reportMode === 'all' ? detailedReport.totals.paidMinor : visibleRows[0]?.paidMinor ?? 0)],
-      ['Credit applied minor', String(reportMode === 'all' ? detailedReport.totals.creditAppliedMinor : visibleRows[0]?.creditAppliedMinor ?? 0)],
-      ['Available credit minor', String(reportMode === 'all' ? detailedReport.totals.availableCreditMinor : visibleRows[0]?.availableCreditMinor ?? 0)],
-      ['Outstanding minor', String(reportMode === 'all' ? detailedReport.totals.outstandingMinor : visibleRows[0]?.outstandingMinor ?? 0)],
-      ['Resident', 'Phone', 'Unit', 'Resident status', 'Billed minor', 'Paid minor', 'Credit applied minor', 'Available credit minor', 'Outstanding minor'],
-      ...visibleRows.map((row) => [row.identity.name, row.identity.phone, row.identity.unit, row.identity.deleted ? 'Deleted' : 'Active', String(row.billedMinor), String(row.paidMinor), String(row.creditAppliedMinor), String(row.availableCreditMinor), String(row.outstandingMinor)]),
-      [],
-      ['Resident', 'Phone', 'Unit', 'Resident status', 'Description', 'Billing period', 'Bill amount minor', 'Bill status', 'Payment amount minor', 'Payment method', 'Payment reference', 'Payment received at', 'Transaction created at'],
-    ];
+    const rows: string[][] = [['Record type','Community','Report from','Report to','Generated at','Resident ID','Resident','Phone','Unit','Resident status','Bill ID','Charge category','Description','Billing period','Currency','Billed INR','Allocated INR','Credit applied INR','Outstanding INR','Bill status','Transaction ID','Receipt INR','Method','Reference','Received at','Created at']];
+    const inr = (minor: number) => (minor / 100).toFixed(2);
+    const safe = (value: string | number) => { const text = String(value); return /^[\s]*[=+@\-\t\r]/.test(text) ? `'${text}` : text; };
+    const put = (values: Array<string | number>) => rows.push([values[0],values[1],fromDate || 'All history',toDate || 'Present',new Date(detailedReport.generatedAtMs).toISOString(),...values.slice(2)].map(safe));
+    for (const warning of detailedReport.coverageWarnings ?? []) {
+      const warningRow: Array<string | number> = Array(23).fill('');
+      warningRow[0] = 'coverage_warning'; warningRow[1] = detailedReport.communityId;
+      warningRow[9] = warning; warningRow[11] = 'INR'; put(warningRow);
+    }
     for (const resident of visibleRows) {
       for (const bill of resident.bills) {
-        if (!bill.settlements.length) rows.push([resident.identity.name, resident.identity.phone, resident.identity.unit, resident.identity.deleted ? 'Deleted' : 'Active', bill.description, bill.billingPeriod, String(bill.amountMinor), bill.status, '', '', '', '']);
-        for (const payment of bill.settlements) rows.push([resident.identity.name, resident.identity.phone, resident.identity.unit, resident.identity.deleted ? 'Deleted' : 'Active', bill.description, bill.billingPeriod, String(bill.amountMinor), bill.status, String(payment.amountMinor), payment.method, payment.reference ?? '', new Date(payment.receivedAtMs).toISOString(), new Date(payment.createdAtMs).toISOString()]);
+        put(['bill',detailedReport.communityId,publicNotice?'':resident.residentId,publicNotice?'':resident.identity.name,publicNotice?'':resident.identity.phone,resident.identity.unit,publicNotice?'':'Active',publicNotice?'':bill.billId,bill.chargeCategory||'Other / Unclassified',publicNotice?'':bill.description,bill.billingPeriod,'INR',publicNotice?'':inr(bill.amountMinor),publicNotice?'':inr(bill.paidMinor),publicNotice?'':inr(bill.creditAppliedMinor||0),inr(bill.outstandingMinor),publicNotice?'':bill.status,'','','','','','']);
+        if (!publicNotice) for (const allocation of bill.settlements) put(['allocation',detailedReport.communityId,resident.residentId,resident.identity.name,resident.identity.phone,resident.identity.unit,resident.identity.deleted?'Deleted':'Active',bill.billId,bill.chargeCategory||'Other / Unclassified',bill.description,bill.billingPeriod,'INR','',inr(allocation.amountMinor),'','','',allocation.transactionId,'',allocation.method,allocation.reference||'',new Date(allocation.receivedAtMs).toISOString(),new Date(allocation.createdAtMs).toISOString()]);
       }
-    }
-    rows.push([], ['Receipts in reporting period (separate from bill allocations)'], ['Resident', 'Transaction', 'Received amount minor', 'Method', 'Reference', 'Received at', 'Created at']);
-    for (const resident of visibleRows) {
-      for (const payment of resident.payments) rows.push([resident.identity.name, payment.transactionId, String(payment.receivedAmountMinor), payment.method, payment.reference ?? '', new Date(payment.receivedAtMs).toISOString(), new Date(payment.createdAtMs).toISOString()]);
+      if (!publicNotice && resident.availableCreditMinor > 0) put(['available_credit',detailedReport.communityId,resident.residentId,resident.identity.name,resident.identity.phone,resident.identity.unit,resident.identity.deleted?'Deleted':'Active','','','','','INR','','','','','','','',inr(resident.availableCreditMinor),'','','']);
+      if (!publicNotice) for (const payment of resident.payments) put(['receipt',detailedReport.communityId,resident.residentId,resident.identity.name,resident.identity.phone,resident.identity.unit,resident.identity.deleted?'Deleted':'Active','','','','','INR','',inr(payment.amountMinor),'','','',payment.transactionId,inr(payment.receivedAmountMinor),payment.method,payment.reference||'',new Date(payment.receivedAtMs).toISOString(),new Date(payment.createdAtMs).toISOString()]);
     }
     const csv = rows.map((row) => row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(',')).join('\r\n');
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
     const a = document.createElement('a'); a.href = url; a.download = `resident-financial-report-${fromDate}-${toDate}.csv`; a.click(); URL.revokeObjectURL(url);
+  }
+
+  async function exportDetailedPdf() {
+    if (!detailedReport || pdfGenerationInFlight.current) return;
+    pdfGenerationInFlight.current = true;
+    setPdfGenerating(true);
+    setPdfError('');
+    setPendingPdf(null);
+    try {
+      const pdf = await import('./financialReportPdf');
+      const response = await fetch('/images/hominode-report-logo.png');
+      if (!response.ok) throw new Error('The official Hominode logo could not be loaded. Retry PDF export.');
+      const logoBlob = await response.blob();
+      const reader = new FileReader();
+      const logoDataUrl = await new Promise<string>((resolve, reject) => {
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(new Error('Unable to read Hominode logo asset.'));
+        reader.readAsDataURL(logoBlob);
+      });
+      const configuredTimeZone = s.community?.data.timeZone;
+      let communityTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      if (typeof configuredTimeZone === 'string') {
+        try {
+          new Intl.DateTimeFormat('en', { timeZone: configuredTimeZone }).format(0);
+          communityTimeZone = configuredTimeZone;
+        } catch { /* Use the local zone if the community has no valid IANA zone. */ }
+      }
+      const result = await pdf.createFinancialReportPdf({
+        report: detailedReport, rows: visibleRows, mode: reportMode,
+        communityName: s.community?.name || 'Community',
+        generatedAt: new Date(detailedReport.generatedAtMs),
+        timeZone: communityTimeZone,
+        filters: { from: fromDate, to: toDate, duesOnly, category: chargeFilter, search: duesSearch, privacySafe: publicNotice },
+        logoDataUrl,
+      });
+      const filename = `hominode-financial-report-${fromDate || 'all-history'}-${toDate || 'present'}.pdf`;
+      if (result.pageCount > 20) setPendingPdf({ blob: result.blob, filename, pages: result.pageCount });
+      else downloadReportBlob(result.blob, filename);
+    } catch (error) {
+      setPdfError(`PDF generation failed. Try CSV export or narrow the report filters. ${error instanceof Error ? error.message : ''}`.trim());
+    } finally {
+      pdfGenerationInFlight.current = false;
+      setPdfGenerating(false);
+    }
+  }
+
+  function downloadReportBlob(blob: Blob, filename: string) {
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url; anchor.download = filename; anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL?.(url), 1000);
   }
 
   useEffect(() => {
@@ -2805,15 +2865,29 @@ function ReportData({ s }: { s: Session }) {
           {!selectedResident && <div className="financial-report-residents" role="listbox" aria-label="Residents">{matchingResidents.map((row) => <button type="button" role="option" aria-selected={false} key={row.residentId} onClick={() => {setSelectedResidentId(row.residentId); setResidentSearch(`${row.identity.name} · ${row.identity.phone} · ${row.identity.unit} · ${row.identity.deleted ? 'Deleted' : 'Active'}`); setDetailedReport(null);}}>{row.identity.name || 'Resident'} · {row.identity.phone || 'Phone unavailable'} · {row.identity.unit || 'Unit unavailable'} · {row.identity.deleted ? 'Deleted' : 'Active'}</button>)}</div>}
         </div>}
         <div className="financial-report-actions">{(reportMode === 'all' || selectedResident) && <button className="primary" disabled={detailedLoading || (!!fromDate && !!toDate && toDate < fromDate)} onClick={() => void generateDetailedReport()}>{detailedLoading ? 'Generating…' : 'Generate Report'}</button>}</div>
+        {detailedReport && <div className="financial-report-actions report-filters">
+          <label><span>Search resident, unit or description</span><input aria-label="Search dues" value={duesSearch} onChange={(event) => setDuesSearch(event.target.value)} /></label>
+          <label><span>Charge category</span><select aria-label="Charge category" value={chargeFilter} onChange={(event) => setChargeFilter(event.target.value)}><option value="all">All categories</option>{chargeCategories.map((category) => <option key={category}>{category}</option>)}</select></label>
+          <label><input type="checkbox" checked={duesOnly} onChange={(event) => setDuesOnly(event.target.checked)} /> Outstanding only</label>
+          <label><input type="checkbox" checked={publicNotice} onChange={(event) => setPublicNotice(event.target.checked)} /> Privacy-safe notice export</label>
+          {(fromDate || toDate) && <span>Balances are current as of report generation. Date range selects bills by creation date; historical balances are not reconstructed.</span>}
+        </div>}
         {detailedError && <p role="alert">{detailedError}</p>}
         {detailedLoading && <p role="status">Generating financial report…</p>}
         {detailedReport && !detailedLoading && <>
           {(detailedReport.coverageWarnings ?? []).map((warning) => <p role="alert" key={warning}>{warning}</p>)}
-          <div className="financial-report-actions"><button className="outline-link" onClick={exportDetailedCsv}><Download size={18} />Export CSV</button></div>
+          <p>Balances are current as of report generation. Selected dates include bills by creation date; historical balances are not reconstructed.</p>
+          <div className="financial-report-actions"><button className="outline-link" onClick={exportDetailedCsv}><Download size={18} />Export CSV</button><button className="outline-link" disabled={pdfGenerating} onClick={() => void exportDetailedPdf()}><FileText size={18} />{pdfGenerating ? 'Generating PDF…' : 'Export PDF'}</button></div>
+          {pdfError && <p role="alert">{pdfError}</p>}
           {reportMode === 'all' && <div className="financial-report-kpis" aria-label="Resident report totals"><article className="financial-report-kpi"><span>Total billed</span><strong>{formatInrMinorUnits(detailedReport.totals.billedMinor)}</strong></article><article className="financial-report-kpi"><span>Total paid</span><strong>{formatInrMinorUnits(detailedReport.totals.paidMinor)}</strong></article><article className="financial-report-kpi"><span>Credit applied / available</span><strong>{formatInrMinorUnits(detailedReport.totals.creditAppliedMinor)} / {formatInrMinorUnits(detailedReport.totals.availableCreditMinor)}</strong></article><article className="financial-report-kpi"><span>Outstanding</span><strong>{formatInrMinorUnits(detailedReport.totals.outstandingMinor)}</strong></article><article className="financial-report-kpi"><span>Residents</span><strong>{detailedReport.totals.residentsCount}</strong></article></div>}
           {reportMode === 'individual' && !selectedRow && <p role="status">Choose a Resident from the searchable list.</p>}
-          {visibleRows.map((resident) => <article key={resident.residentId} className="financial-report-card"><h3>{resident.identity.name || 'Resident'} {resident.identity.deleted ? '(Deleted)' : '(Active)'}</h3><p>{resident.identity.phone || 'Phone unavailable'} · Unit {resident.identity.unit || 'unavailable'} · {resident.identity.residentType || 'Resident'}</p><p>Total billed: {formatInrMinorUnits(resident.billedMinor)} · Total paid: {formatInrMinorUnits(resident.paidMinor)} · Credit applied/available: {formatInrMinorUnits(resident.creditAppliedMinor)} / {formatInrMinorUnits(resident.availableCreditMinor)} · Outstanding: {formatInrMinorUnits(resident.outstandingMinor)} · {resident.paymentStatus}</p><div className="table-scroll"><table><thead><tr><th>Description</th><th>Period</th><th>Bill amount</th><th>Status</th><th>Payment</th><th>Method / reference</th><th>Received</th><th>Transaction</th></tr></thead><tbody>{resident.bills.flatMap((bill) => bill.settlements.length ? bill.settlements.map((payment) => <tr key={`${bill.billId}-${payment.transactionId}`}><td>{bill.description}</td><td>{bill.billingPeriod}</td><td>{formatInrMinorUnits(bill.amountMinor)}</td><td>{bill.status}</td><td>{formatInrMinorUnits(payment.amountMinor)}</td><td>{payment.method} / {payment.reference || '—'}</td><td>{new Date(payment.receivedAtMs).toLocaleString()}</td><td>{new Date(payment.createdAtMs).toLocaleString()}</td></tr>) : [<tr key={bill.billId}><td>{bill.description}</td><td>{bill.billingPeriod}</td><td>{formatInrMinorUnits(bill.amountMinor)}</td><td>{bill.status}</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>])}</tbody></table></div><h4>Receipts in reporting period</h4><p>Current bill balances include net settlements. Receipts below are separate activity and may include credit or payments toward older bills.</p>{resident.payments.map((payment) => <p key={payment.transactionId}>{formatInrMinorUnits(payment.receivedAmountMinor)} · {payment.method} · {payment.reference || '—'} · Transaction {payment.transactionId} · Received {new Date(payment.receivedAtMs).toLocaleString()} · Created {new Date(payment.createdAtMs).toLocaleString()}</p>)}</article>)}
+          {reportMode === 'individual' && selectedRow && <article className="financial-report-card"><h3>{selectedRow.identity.name || 'Resident'} {selectedRow.identity.deleted ? '(Deleted)' : '(Active)'}</h3><p>{selectedRow.identity.phone || 'Phone unavailable'} · Unit {selectedRow.identity.unit || 'unavailable'} · {selectedRow.identity.residentType || 'Resident'}</p><p>Total billed: {formatInrMinorUnits(selectedRow.billedMinor)} · Allocated: {formatInrMinorUnits(selectedRow.paidMinor)} · Credit applied: {formatInrMinorUnits(selectedRow.creditAppliedMinor)} · Available credit: {formatInrMinorUnits(selectedRow.availableCreditMinor)} · Current outstanding: {formatInrMinorUnits(selectedRow.outstandingMinor)}</p></article>}
+          {reportMode === 'all' && visibleRows.map((resident) => <h3 key={`resident-heading-${resident.residentId}`}>{resident.identity.name || 'Resident'} {resident.identity.deleted ? '(Deleted)' : '(Active)'}</h3>)}
+          <div className="table-scroll"><table className="dues-table"><thead><tr><th>Unit</th><th>Resident / account</th><th>Category</th><th>Description</th><th>Period</th><th>Billed</th><th>Allocated</th><th>Credit</th><th>Outstanding</th><th>Status</th></tr></thead><tbody>{visibleRows.flatMap((resident) => resident.bills.map((bill) => <tr key={`${resident.residentId}-${bill.billId}`}><td>{resident.identity.unit || '—'}</td><td>{resident.identity.name || resident.residentId}{resident.identity.deleted ? ' (Deleted)' : ''}</td><td>{bill.chargeCategory || 'Other / Unclassified'}</td><td>{bill.description}</td><td>{bill.billingPeriod}</td><td>{formatInrMinorUnits(bill.amountMinor)}</td><td>{formatInrMinorUnits(bill.paidMinor)}</td><td>{formatInrMinorUnits(bill.creditAppliedMinor || 0)}</td><td>{formatInrMinorUnits(bill.outstandingMinor)}</td><td>{bill.status === 'overdue' ? 'Overdue' : bill.outstandingMinor > 0 ? 'Outstanding' : 'Paid'}</td></tr>))}</tbody></table></div>
+          <h3>Payment allocations</h3><div className="table-scroll"><table><thead><tr><th>Resident</th><th>Bill</th><th>Allocated</th><th>Method / reference</th><th>Received</th><th>Transaction ID</th></tr></thead><tbody>{visibleRows.flatMap((resident) => resident.bills.flatMap((bill) => bill.settlements.map((payment) => <tr key={`${bill.billId}-${payment.transactionId}`}><td>{resident.identity.name}</td><td>{bill.billId}</td><td>{formatInrMinorUnits(payment.amountMinor)}</td><td>{payment.method} / {payment.reference || '—'}</td><td>{new Date(payment.receivedAtMs).toLocaleString()}</td><td>{payment.transactionId}</td></tr>)))}</tbody></table></div>
+          {reportMode === 'individual' && selectedRow && <article className="financial-report-card"><h3>Receipts during selected period</h3><p>Receipts are separate from bill allocations.</p>{selectedRow.payments.map((payment) => <p key={payment.transactionId}>{formatInrMinorUnits(payment.receivedAmountMinor)} · {payment.method} · {payment.reference || '—'} · {new Date(payment.receivedAtMs).toLocaleString()}</p>)}</article>}
         </>}
+        {pendingPdf && <Modal title="Large PDF report" onClose={() => setPendingPdf(null)}><p>This complete report is {pendingPdf.pages} pages. Downloading a large PDF may use substantial memory.</p><div className="financial-report-actions"><button type="button" className="outline-link" onClick={() => setPendingPdf(null)}>Cancel</button><button type="button" className="primary" onClick={() => { downloadReportBlob(pendingPdf.blob, pendingPdf.filename); setPendingPdf(null); }}>Download PDF anyway</button></div></Modal>}
       </section>
       <section className="community-overview" aria-labelledby="community-overview-title">
         <header className="community-overview-header">

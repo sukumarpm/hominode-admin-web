@@ -78,6 +78,22 @@ export async function createFinancialReportPdf(input: FinancialPdfInput): Promis
   const outstanding = sumMinor(flatBills.map(({ bill }) => bill.outstandingMinor));
   const availableCredit = sumMinor(rows.map((resident) => resident.availableCreditMinor));
 
+  const billReferenceById = new Map<string, string>();
+  const transactionReferenceById = new Map<string, string>();
+  for (const { bill } of flatBills) {
+    if (!billReferenceById.has(bill.billId)) billReferenceById.set(bill.billId, `B${billReferenceById.size + 1}`);
+    for (const payment of bill.settlements) {
+      if (!transactionReferenceById.has(payment.transactionId))
+        transactionReferenceById.set(payment.transactionId, `T${transactionReferenceById.size + 1}`);
+    }
+  }
+  for (const resident of rows) {
+    for (const payment of resident.payments) {
+      if (!transactionReferenceById.has(payment.transactionId))
+        transactionReferenceById.set(payment.transactionId, `T${transactionReferenceById.size + 1}`);
+    }
+  }
+
   // Full-width brand bar. The official RGB logo's square artwork is aspect-fit
   // inside its slot rather than stretched or cropped.
   const headerHeight = 42;
@@ -216,23 +232,39 @@ export async function createFinancialReportPdf(input: FinancialPdfInput): Promis
       alternateRowStyles: { fillColor: [245, 248, 250] },
       columnStyles: { 3: { halign: 'right' }, 4: { halign: 'right' }, 5: { halign: 'right' }, 6: { halign: 'right' } },
     });
-    const allocationRows = flatBills.flatMap(({ bill }) => bill.settlements.map((payment) => [bill.billId, payment.transactionId, inrValue(payment.amountMinor), payment.method, payment.reference || '—', formatTimestamp(new Date(payment.receivedAtMs), timeZone)]));
+    const allocationRows = flatBills.flatMap(({ bill }) => bill.settlements.map((payment) => [billReferenceById.get(bill.billId) || '—', transactionReferenceById.get(payment.transactionId) || '—', inrValue(payment.amountMinor), payment.method, payment.reference || '—', formatTimestamp(new Date(payment.receivedAtMs), timeZone)]));
     const afterBills = (doc as jsPDF & { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? tableStart + 10;
     autoTable(doc, {
-      startY: afterBills + 8, head: [['Bill ID', 'Transaction ID', 'Allocated INR', 'Method', 'Reference', 'Received at']],
+      startY: afterBills + 8, pageBreak: 'avoid', head: [['Bill\nref', 'Transaction\nref', 'Allocated\n(INR)', 'Method', 'Reference', 'Received at']],
       body: allocationRows, theme: 'grid', margin: { left: margin, right: margin, bottom: 16 }, showHead: 'everyPage', rowPageBreak: 'avoid',
-      styles: { font: 'helvetica', fontSize: 8, cellPadding: 2, overflow: 'linebreak', textColor: [35, 45, 55], lineColor: [195, 204, 212] },
+      styles: { font: 'helvetica', fontSize: 7, cellPadding: 1.5, overflow: 'linebreak', textColor: [35, 45, 55], lineColor: [195, 204, 212], valign: 'middle' },
       headStyles: { fillColor: navy, textColor: [255, 255, 255], fontStyle: 'bold' },
+      columnStyles: { 0: { cellWidth: 15 }, 1: { cellWidth: 19 }, 2: { cellWidth: 23, halign: 'right' }, 3: { cellWidth: 18 }, 4: { cellWidth: 30 }, 5: { cellWidth: 81 } },
     });
     const afterAllocations = (doc as jsPDF & { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? afterBills + 8;
     const resident = rows[0];
-    const receiptRows = resident?.payments.map((payment) => [payment.transactionId, inrValue(payment.receivedAmountMinor), inrValue(payment.amountMinor), payment.method, payment.reference || '—', formatTimestamp(new Date(payment.receivedAtMs), timeZone)]) ?? [];
+    const receiptRows = resident?.payments.map((payment) => [transactionReferenceById.get(payment.transactionId) || '—', inrValue(payment.receivedAmountMinor), inrValue(payment.amountMinor), payment.method, payment.reference || '—', formatTimestamp(new Date(payment.receivedAtMs), timeZone)]) ?? [];
     autoTable(doc, {
-      startY: afterAllocations + 8, head: [['Transaction ID', 'Receipt INR', 'Allocated to selected bills INR', 'Method', 'Reference', 'Received at']],
+      startY: afterAllocations + 8, pageBreak: 'avoid', head: [['Transaction\nref', 'Receipt\n(INR)', 'Allocated to selected bills\n(INR)', 'Method', 'Reference', 'Received at']],
       body: receiptRows, theme: 'grid', margin: { left: margin, right: margin, bottom: 16 }, showHead: 'everyPage', rowPageBreak: 'avoid',
-      styles: { font: 'helvetica', fontSize: 8, cellPadding: 2, overflow: 'linebreak', textColor: [35, 45, 55], lineColor: [195, 204, 212] },
+      styles: { font: 'helvetica', fontSize: 7, cellPadding: 1.5, overflow: 'linebreak', textColor: [35, 45, 55], lineColor: [195, 204, 212], valign: 'middle' },
       headStyles: { fillColor: teal, textColor: [255, 255, 255], fontStyle: 'bold' },
+      columnStyles: { 0: { cellWidth: 18 }, 1: { cellWidth: 22, halign: 'right' }, 2: { cellWidth: 35, halign: 'right' }, 3: { cellWidth: 18 }, 4: { cellWidth: 30 }, 5: { cellWidth: 63 } },
     });
+    const afterReceipts = (doc as jsPDF & { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? afterAllocations + 8;
+    const identifierRows = [
+      ...[...billReferenceById].map(([id, reference]) => [`Bill ${reference}`, id]),
+      ...[...transactionReferenceById].map(([id, reference]) => [`Transaction ${reference}`, id]),
+    ];
+    if (identifierRows.length) {
+      autoTable(doc, {
+        startY: afterReceipts + 7, pageBreak: 'avoid', head: [['Reconciliation reference', 'Full original identifier']],
+        body: identifierRows, theme: 'grid', margin: { left: margin, right: margin, bottom: 16 }, showHead: 'everyPage', rowPageBreak: 'avoid',
+        styles: { font: 'helvetica', fontSize: 7, cellPadding: 1.5, overflow: 'linebreak', textColor: [35, 45, 55], lineColor: [195, 204, 212], valign: 'middle' },
+        headStyles: { fillColor: bodyNavy, textColor: [255, 255, 255], fontStyle: 'bold' },
+        columnStyles: { 0: { cellWidth: 36 }, 1: { cellWidth: 150 } },
+      });
+    }
   }
 
   const pageCount = doc.getNumberOfPages();

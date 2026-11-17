@@ -1,6 +1,25 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createFinancialReportPdf, type FinancialPdfInput } from '../financialReportPdf';
 import type { DetailedFinancialReport, DetailedFinancialReportRow } from '../actions';
+
+const autoTableCalls = vi.hoisted(() => ({ options: [] as unknown[], allocationPages: [] as number[] }));
+vi.mock('jspdf-autotable', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('jspdf-autotable')>();
+  return {
+    default: (...args: Parameters<typeof actual.default>) => {
+      const options = args[1];
+      autoTableCalls.options.push(options);
+      if ((options.head as string[][] | undefined)?.[0]?.[0] === 'Bill\nref') {
+        const previous = options.didDrawCell;
+        options.didDrawCell = (data) => {
+          if (data.section === 'body') autoTableCalls.allocationPages.push(data.pageNumber);
+          previous?.(data);
+        };
+      }
+      return actual.default(...args);
+    },
+  };
+});
 
 function row(index: number): DetailedFinancialReportRow {
   return {
@@ -42,6 +61,46 @@ describe('financial report PDF', () => {
     const result = await createFinancialReportPdf(input(rows));
     expect(result.pageCount).toBeGreaterThan(1);
     expect(result.blob.size).toBeGreaterThan(10000);
+  });
+
+  it('keeps long reconciliation IDs readable while fitting ordinary allocations compactly', async () => {
+    const resident = row(1);
+    resident.identity.name = 'Anika Mathew';
+    resident.identity.unit = 'H005';
+    const billIds = Array.from({ length: 6 }, (_, index) => `bill_${'green-wave-residences-H005-2026-09-'.repeat(2)}${index + 1}`);
+    const transactionIds = Array.from({ length: 6 }, (_, index) => `transaction_${'green-wave-residences-payment-allocation-'.repeat(2)}${index + 1}`);
+    resident.bills = billIds.map((billId, index) => ({
+      billId, chargeCategory: 'maintenance', description: `Maintenance ${index + 1}`, billingPeriod: `2026-${String(index + 5).padStart(2, '0')}`,
+      amountMinor: 350000, paidMinor: index === 5 ? 175000 : 350000, creditAppliedMinor: 0, outstandingMinor: index === 5 ? 175000 : 0,
+      status: index === 5 ? 'partially_paid' : 'paid',
+      settlements: [{ transactionId: transactionIds[index], amountMinor: index === 5 ? 175000 : 350000, receivedAmountMinor: index === 5 ? 175000 : 350000, method: 'upi', reference: `UPI-${index + 1}`, receivedAtMs: 1790800000000 + index * 86400000, createdAtMs: 1790800000000 + index * 86400000 }],
+    }));
+    resident.payments = transactionIds.map((transactionId, index) => ({
+      transactionId, amountMinor: index === 5 ? 175000 : 350000, receivedAmountMinor: index === 5 ? 175000 : 350000, method: 'upi', reference: `UPI-${index + 1}`,
+      receivedAtMs: 1790800000000 + index * 86400000, createdAtMs: 1790800000000 + index * 86400000,
+    }));
+    const before = autoTableCalls.options.length;
+    const pageBefore = autoTableCalls.allocationPages.length;
+    const result = await createFinancialReportPdf(input([resident], {
+      communityName: 'Green Wave Residences', mode: 'individual',
+      filters: { from: '2026-09-01', to: '2026-10-31', duesOnly: false, category: 'all', search: '', privacySafe: false },
+    }));
+    const calls = autoTableCalls.options.slice(before) as Array<{
+      head: string[][]; body: string[][]; columnStyles?: Record<number, { cellWidth?: number }>; pageBreak?: string;
+    }>;
+    const allocations = calls.find((options) => options.head[0][0] === 'Bill\nref')!;
+    const receipts = calls.find((options) => options.head[0][0] === 'Transaction\nref')!;
+    const identifiers = calls.find((options) => options.head[0][0] === 'Reconciliation reference')!;
+    expect(allocations.body).toHaveLength(6);
+    expect(allocations.body[0].slice(0, 2)).toEqual(['B1', 'T1']);
+    expect(allocations.columnStyles).toMatchObject({ 0: { cellWidth: 15 }, 1: { cellWidth: 19 }, 5: { cellWidth: 81 } });
+    expect(allocations.pageBreak).toBe('avoid');
+    expect(new Set(autoTableCalls.allocationPages.slice(pageBefore)).size).toBe(1);
+    expect(receipts.body[0][0]).toBe('T1');
+    expect(receipts.head[0]).toContain('Allocated to selected bills\n(INR)');
+    expect(identifiers.body).toContainEqual(['Bill B1', billIds[0]]);
+    expect(identifiers.body).toContainEqual(['Transaction T1', transactionIds[0]]);
+    expect(result.pageCount).toBeLessThanOrEqual(3);
   });
 
   it('reports the exact actual page count at and above the 20-page threshold', async () => {

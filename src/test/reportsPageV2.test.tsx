@@ -155,20 +155,53 @@ describe('ReportsPage Billing V2 financial report', () => {
     await waitFor(() => expect(reportActions.getDetailedReport).toHaveBeenCalledWith(session, {fromMs: 0, toMs: 253402300799999}, 'deleted'));
     expect(await screen.findByRole('heading', {name: 'test acct 6 (Deleted)'})).toBeInTheDocument();
   });
-  it('generates all-resident report and displays active and retained deleted identities and ledger totals', async () => {
+  it('generates all-resident report without standalone resident headings and displays ledger totals', async () => {
     const session = makeSession('admin');
     reportActions.getReport.mockResolvedValue(financialReport(session.community!.id, currentLocalMonth()));
     reportActions.getDetailedReport.mockResolvedValue(detailedReport(session.community!.id));
     renderReports(session);
     fireEvent.click(screen.getByRole('button', {name: 'Generate Report'}));
-    expect(await screen.findByRole('heading', {name: 'Former Resident (Deleted)'})).toBeInTheDocument();
-    expect(screen.getByRole('heading', {name: 'Active Resident (Active)'})).toBeInTheDocument();
+    expect(await screen.findByRole('heading', {name: 'Dues register'})).toBeInTheDocument();
+    expect(screen.getByRole('heading', {name: 'Payment allocations'})).toBeInTheDocument();
+    expect(screen.queryByRole('heading', {name: 'Former Resident (Deleted)'})).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', {name: 'Active Resident (Active)'})).not.toBeInTheDocument();
     const totals = within(screen.getByLabelText('Resident report totals'));
     expect(totals.getByText('₹300.00')).toBeInTheDocument();
     expect(totals.getByText('₹200.00')).toBeInTheDocument();
     expect(totals.getByText('₹100.00')).toBeInTheDocument();
     expect(screen.getByRole('cell', {name: 'cash / CASH-1'})).toBeInTheDocument();
     expect(reportActions.getDetailedReport).toHaveBeenCalledWith(session, expect.objectContaining({fromMs: 0, toMs: 253402300799999}), undefined);
+  });
+
+  it('keeps filtering and both exports available in All Residents mode', async () => {
+    const session = makeSession('admin');
+    reportActions.getReport.mockResolvedValue(financialReport(session.community!.id, currentLocalMonth()));
+    reportActions.getDetailedReport.mockResolvedValue(detailedReport(session.community!.id));
+    const oldCreateObjectURL = Object.getOwnPropertyDescriptor(URL, 'createObjectURL');
+    const oldRevokeObjectURL = Object.getOwnPropertyDescriptor(URL, 'revokeObjectURL');
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:resident-report') });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    try {
+      renderReports(session);
+      fireEvent.click(screen.getByRole('button', {name: 'Generate Report'}));
+      await screen.findByRole('heading', {name: 'Dues register'});
+      expect(screen.getAllByRole('cell', {name: 'Active Resident'}).length).toBeGreaterThan(0);
+
+      fireEvent.change(screen.getByLabelText('Search dues'), {target: {value: 'no matching charge'}});
+      expect(await screen.findByText('No charges match the selected filters.')).toBeInTheDocument();
+      expect(screen.getByRole('button', {name: 'Export CSV'})).toBeEnabled();
+      expect(screen.getByRole('button', {name: 'Export PDF'})).toBeEnabled();
+
+      fireEvent.click(screen.getByRole('button', {name: 'Export CSV'}));
+      await waitFor(() => expect(click).toHaveBeenCalledTimes(1));
+      fireEvent.click(screen.getByRole('button', {name: 'Export PDF'}));
+      await waitFor(() => expect(pdfMocks.create).toHaveBeenCalledWith(expect.objectContaining({rows: expect.any(Array), mode: 'all'})));
+    } finally {
+      if (oldCreateObjectURL) Object.defineProperty(URL, 'createObjectURL', oldCreateObjectURL); else Reflect.deleteProperty(URL, 'createObjectURL');
+      if (oldRevokeObjectURL) Object.defineProperty(URL, 'revokeObjectURL', oldRevokeObjectURL); else Reflect.deleteProperty(URL, 'revokeObjectURL');
+      click.mockRestore();
+    }
   });
 
   it('downloads a 20-page PDF without a warning and confirms the actual page count above the threshold', async () => {
@@ -260,7 +293,7 @@ describe('ReportsPage Billing V2 financial report', () => {
     reportActions.getResidents.mockResolvedValue(response.rows.map(({residentId, identity}) => ({residentId, identity})));
     renderReports(session);
     fireEvent.click(screen.getByRole('button', {name: 'Generate Report'}));
-    await screen.findByRole('heading', {name: 'Former Resident (Deleted)'});
+    await screen.findByRole('heading', {name: 'Dues register'});
     const blobs: Blob[] = [];
     const oldCreate = Object.getOwnPropertyDescriptor(URL, 'createObjectURL');
     const oldRevoke = Object.getOwnPropertyDescriptor(URL, 'revokeObjectURL');

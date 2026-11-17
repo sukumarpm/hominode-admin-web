@@ -519,23 +519,6 @@ function ScopedModule({
   const [params, setParams] = useSearchParams();
   const { entitlement } = useSubscription();
 
-  // TEMP DEBUG: Events subscription / permission investigation
-  if (module === 'events') {
-    console.group('[Events Debug]');
-    console.log('module:', module);
-    console.log('session role:', s.role);
-    console.log('profile role:', s.profile?.role);
-    console.log('community:', s.community);
-    console.log('community id:', s.community?.id);
-    console.log('community name:', s.community?.name);
-    console.log('entitlement:', entitlement);
-    console.log('planId:', entitlement?.planId);
-    console.log('planName:', entitlement?.planName);
-    console.log('features:', entitlement?.features);
-    console.log('events feature:', entitlement?.features?.events);
-    console.log('canUseFeature(events):', canUseFeature(entitlement, 'events'));
-    console.groupEnd();
-  }
   const bookingAllowed = canUseFeature(entitlement, 'facilityBooking');
   const resource = useRows(s, module, revision);
   const v2ProofResource = useAdminV2PaymentProofs(
@@ -2874,19 +2857,24 @@ function ReportData({ s }: { s: Session }) {
         </div>}
         {detailedError && <p role="alert">{detailedError}</p>}
         {detailedLoading && <p role="status">Generating financial report…</p>}
-        {detailedReport && !detailedLoading && <>
+        {detailedReport && !detailedLoading && <div className="financial-report-results">
           {(detailedReport.coverageWarnings ?? []).map((warning) => <p role="alert" key={warning}>{warning}</p>)}
-          <p>Balances are current as of report generation. Selected dates include bills by creation date; historical balances are not reconstructed.</p>
-          <div className="financial-report-actions"><button className="outline-link" onClick={exportDetailedCsv}><Download size={18} />Export CSV</button><button className="outline-link" disabled={pdfGenerating} onClick={() => void exportDetailedPdf()}><FileText size={18} />{pdfGenerating ? 'Generating PDF…' : 'Export PDF'}</button></div>
+          <p className="financial-report-disclosure">Balances are current as of report generation. Selected dates include bills by creation date; historical balances are not reconstructed.</p>
+          <div className="financial-report-actions report-export-actions"><button className="outline-link" onClick={exportDetailedCsv}><Download size={18} />Export CSV</button><button className="outline-link" disabled={pdfGenerating} onClick={() => void exportDetailedPdf()}><FileText size={18} />{pdfGenerating ? 'Generating PDF…' : 'Export PDF'}</button></div>
           {pdfError && <p role="alert">{pdfError}</p>}
           {reportMode === 'all' && <div className="financial-report-kpis" aria-label="Resident report totals"><article className="financial-report-kpi"><span>Total billed</span><strong>{formatInrMinorUnits(detailedReport.totals.billedMinor)}</strong></article><article className="financial-report-kpi"><span>Total paid</span><strong>{formatInrMinorUnits(detailedReport.totals.paidMinor)}</strong></article><article className="financial-report-kpi"><span>Credit applied / available</span><strong>{formatInrMinorUnits(detailedReport.totals.creditAppliedMinor)} / {formatInrMinorUnits(detailedReport.totals.availableCreditMinor)}</strong></article><article className="financial-report-kpi"><span>Outstanding</span><strong>{formatInrMinorUnits(detailedReport.totals.outstandingMinor)}</strong></article><article className="financial-report-kpi"><span>Residents</span><strong>{detailedReport.totals.residentsCount}</strong></article></div>}
           {reportMode === 'individual' && !selectedRow && <p role="status">Choose a Resident from the searchable list.</p>}
           {reportMode === 'individual' && selectedRow && <article className="financial-report-card"><h3>{selectedRow.identity.name || 'Resident'} {selectedRow.identity.deleted ? '(Deleted)' : '(Active)'}</h3><p>{selectedRow.identity.phone || 'Phone unavailable'} · Unit {selectedRow.identity.unit || 'unavailable'} · {selectedRow.identity.residentType || 'Resident'}</p><p>Total billed: {formatInrMinorUnits(selectedRow.billedMinor)} · Allocated: {formatInrMinorUnits(selectedRow.paidMinor)} · Credit applied: {formatInrMinorUnits(selectedRow.creditAppliedMinor)} · Available credit: {formatInrMinorUnits(selectedRow.availableCreditMinor)} · Current outstanding: {formatInrMinorUnits(selectedRow.outstandingMinor)}</p></article>}
-          {reportMode === 'all' && visibleRows.map((resident) => <h3 key={`resident-heading-${resident.residentId}`}>{resident.identity.name || 'Resident'} {resident.identity.deleted ? '(Deleted)' : '(Active)'}</h3>)}
-          <div className="table-scroll"><table className="dues-table"><thead><tr><th>Unit</th><th>Resident / account</th><th>Category</th><th>Description</th><th>Period</th><th>Billed</th><th>Allocated</th><th>Credit</th><th>Outstanding</th><th>Status</th></tr></thead><tbody>{visibleRows.flatMap((resident) => resident.bills.map((bill) => <tr key={`${resident.residentId}-${bill.billId}`}><td>{resident.identity.unit || '—'}</td><td>{resident.identity.name || resident.residentId}{resident.identity.deleted ? ' (Deleted)' : ''}</td><td>{bill.chargeCategory || 'Other / Unclassified'}</td><td>{bill.description}</td><td>{bill.billingPeriod}</td><td>{formatInrMinorUnits(bill.amountMinor)}</td><td>{formatInrMinorUnits(bill.paidMinor)}</td><td>{formatInrMinorUnits(bill.creditAppliedMinor || 0)}</td><td>{formatInrMinorUnits(bill.outstandingMinor)}</td><td>{bill.status === 'overdue' ? 'Overdue' : bill.outstandingMinor > 0 ? 'Outstanding' : 'Paid'}</td></tr>))}</tbody></table></div>
-          <h3>Payment allocations</h3><div className="table-scroll"><table><thead><tr><th>Resident</th><th>Bill</th><th>Allocated</th><th>Method / reference</th><th>Received</th><th>Transaction ID</th></tr></thead><tbody>{visibleRows.flatMap((resident) => resident.bills.flatMap((bill) => bill.settlements.map((payment) => <tr key={`${bill.billId}-${payment.transactionId}`}><td>{resident.identity.name}</td><td>{bill.billId}</td><td>{formatInrMinorUnits(payment.amountMinor)}</td><td>{payment.method} / {payment.reference || '—'}</td><td>{new Date(payment.receivedAtMs).toLocaleString()}</td><td>{payment.transactionId}</td></tr>)))}</tbody></table></div>
+          <section className="financial-report-table-section" aria-labelledby="dues-register-title">
+            <header className="financial-report-section-heading"><div><p className="eyebrow">Resident charges</p><h3 id="dues-register-title">Dues register</h3></div><span>{visibleRows.reduce((count, resident) => count + resident.bills.length, 0)} charges</span></header>
+            {visibleRows.some((resident) => resident.bills.length > 0) ? <div className="table-scroll"><table className="dues-table"><thead><tr><th>Unit</th><th>Resident / account</th><th>Category</th><th>Description</th><th>Period</th><th>Billed</th><th>Allocated</th><th>Credit</th><th>Outstanding</th><th>Status</th></tr></thead><tbody>{visibleRows.flatMap((resident) => resident.bills.map((bill) => <tr key={`${resident.residentId}-${bill.billId}`}><td>{resident.identity.unit || '—'}</td><td>{resident.identity.name || resident.residentId}{resident.identity.deleted ? ' (Deleted)' : ''}</td><td>{bill.chargeCategory || 'Other / Unclassified'}</td><td>{bill.description}</td><td>{bill.billingPeriod}</td><td>{formatInrMinorUnits(bill.amountMinor)}</td><td>{formatInrMinorUnits(bill.paidMinor)}</td><td>{formatInrMinorUnits(bill.creditAppliedMinor || 0)}</td><td>{formatInrMinorUnits(bill.outstandingMinor)}</td><td>{bill.status === 'overdue' ? 'Overdue' : bill.outstandingMinor > 0 ? 'Outstanding' : 'Paid'}</td></tr>))}</tbody></table></div> : <p className="financial-report-empty">No charges match the selected filters.</p>}
+          </section>
+          <section className="financial-report-table-section" aria-labelledby="payment-allocations-title">
+            <header className="financial-report-section-heading"><div><p className="eyebrow">Settlements</p><h3 id="payment-allocations-title">Payment allocations</h3></div></header>
+            {visibleRows.some((resident) => resident.bills.some((bill) => bill.settlements.length > 0)) ? <div className="table-scroll"><table><thead><tr><th>Resident</th><th>Bill</th><th>Allocated</th><th>Method / reference</th><th>Received</th><th>Transaction ID</th></tr></thead><tbody>{visibleRows.flatMap((resident) => resident.bills.flatMap((bill) => bill.settlements.map((payment) => <tr key={`${bill.billId}-${payment.transactionId}`}><td>{resident.identity.name}</td><td>{bill.billId}</td><td>{formatInrMinorUnits(payment.amountMinor)}</td><td>{payment.method} / {payment.reference || '—'}</td><td>{new Date(payment.receivedAtMs).toLocaleString()}</td><td>{payment.transactionId}</td></tr>)))}</tbody></table></div> : <p className="financial-report-empty">No payment allocations match the selected filters.</p>}
+          </section>
           {reportMode === 'individual' && selectedRow && <article className="financial-report-card"><h3>Receipts during selected period</h3><p>Receipts are separate from bill allocations.</p>{selectedRow.payments.map((payment) => <p key={payment.transactionId}>{formatInrMinorUnits(payment.receivedAmountMinor)} · {payment.method} · {payment.reference || '—'} · {new Date(payment.receivedAtMs).toLocaleString()}</p>)}</article>}
-        </>}
+        </div>}
         {pendingPdf && <Modal title="Large PDF report" onClose={() => setPendingPdf(null)}><p>This complete report is {pendingPdf.pages} pages. Downloading a large PDF may use substantial memory.</p><div className="financial-report-actions"><button type="button" className="outline-link" onClick={() => setPendingPdf(null)}>Cancel</button><button type="button" className="primary" onClick={() => { downloadReportBlob(pendingPdf.blob, pendingPdf.filename); setPendingPdf(null); }}>Download PDF anyway</button></div></Modal>}
       </section>
       <section className="community-overview" aria-labelledby="community-overview-title">

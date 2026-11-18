@@ -64,7 +64,7 @@ it('shows valid V2 proof details using minor amount and V2 metadata only', () =>
   expect(screen.getByText('UPI')).toBeInTheDocument();
   expect(screen.getByText('Direct UPI')).toBeInTheDocument();
   expect(screen.getByText('Manual')).toBeInTheDocument();
-  expect(screen.getByText('Receipt')).toBeInTheDocument();
+  expect(screen.getByText('Uploaded receipt')).toBeInTheDocument();
   expect(screen.getByText('UTR-938401')).toBeInTheDocument();
   expect(screen.getByText('bill-15')).toBeInTheDocument();
   expect(screen.getByText('resident-8')).toBeInTheDocument();

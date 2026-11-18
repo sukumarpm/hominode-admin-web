@@ -31,6 +31,9 @@ export function parseInrRupeesToMinorUnits(value: string): number | null {
 
 export function paymentVerificationErrorMessage(error: unknown): string {
   const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  if (message.includes('duplicate_bank_credit')) {
+    return 'This bank transaction has already been matched to a payment in the community. Do not approve it again.';
+  }
   if (
     message.includes('duplicate_payment_reference') ||
     message.includes('reference is already recorded')

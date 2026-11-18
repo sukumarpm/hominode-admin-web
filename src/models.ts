@@ -467,10 +467,15 @@ export function hasValidV2PaymentProof(data: Data, documentId?: string): boolean
     (data.id == null || !!id) &&
     data.method === 'upi' &&
     data.provider === 'direct_upi' &&
-    data.evidenceType === 'receipt' &&
+    (data.evidenceType === 'receipt' || data.evidenceType === 'bank_credit_report') &&
     (data.amountContractVersion == null || data.amountContractVersion === 2) &&
     (status === 'pending' || status === 'failed' || status === 'completed') &&
-    (status !== 'pending' || !!str(data.receiptPath))
+    (data.evidenceType !== 'bank_credit_report' ||
+      (data.receiptPath == null && data.verificationMode === 'manual')) &&
+    (status !== 'pending' ||
+      (data.evidenceType === 'bank_credit_report'
+        ? data.receiptPath == null
+        : !!str(data.receiptPath)))
   );
 }
 

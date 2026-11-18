@@ -284,7 +284,7 @@ export function PaymentReviewSection({
   );
   const hasReceipt = !!str(data.receiptPath) && (!isV2 || validV2);
   const showReceiptButton = hasReceipt && (!isV2 || canReview);
-  const bankReferenceValid = /^[A-Za-z0-9][A-Za-z0-9\s./_:-]{3,199}$/.test(bankCreditReference.trim());
+  const bankReferenceValid = bankCreditReference.trim().length > 0 && bankCreditReference.trim().length <= 200;
   const bankDateValid = /^\d{4}-\d{2}-\d{2}$/.test(bankCreditDate) &&
     !Number.isNaN(Date.parse(bankCreditDate)) &&
     new Date(bankCreditDate + 'T00:00:00Z').toISOString().slice(0, 10) === bankCreditDate;
@@ -295,7 +295,7 @@ export function PaymentReviewSection({
     if (verifyLock.current) return;
     verifyLock.current = true;
     setVerifySubmitting(true);
-    void Promise.resolve(onVerify(confirmedAmountMinor, bankCredit)).finally(() => {
+    void Promise.resolve(bankCredit ? onVerify(confirmedAmountMinor, bankCredit) : onVerify(confirmedAmountMinor)).finally(() => {
       verifyLock.current = false;
       setVerifySubmitting(false);
       setShowAmountConfirmation(false);

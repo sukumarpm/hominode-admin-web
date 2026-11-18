@@ -11,6 +11,11 @@ import {
 import { useRef, useState } from 'react';
 
 const MAX_SAFE_MINOR = Number.MAX_SAFE_INTEGER;
+export type ConfirmedBankCredit = {
+  bankCreditReference: string;
+  bankCreditDate: string;
+  confirmedAmountMinor: number;
+};
 
 /** Parse rupees without floating-point rounding; blank or malformed input fails closed. */
 export function parseInrRupeesToMinorUnits(value: string): number | null {
@@ -137,7 +142,7 @@ export function PaymentReviewDetails({
       ['Payment method', 'UPI'],
       ['Provider', 'Direct UPI'],
       ['Verification', 'Manual'],
-      ['Evidence', 'Receipt'],
+      ['Evidence', data.evidenceType === 'bank_credit_report' ? 'Resident report — bank verification required' : 'Uploaded receipt'],
       ['Submitted', dateLabel(data.submittedAt) === '—' ? 'Not specified' : dateLabel(data.submittedAt)],
     ];
     const identifierValues: [string, string][] = [
@@ -249,10 +254,13 @@ export function PaymentReviewSection({
   busy: boolean;
   receipt: string;
   onViewReceipt: () => void;
-  onVerify: (confirmedAmountMinor?: number) => void | Promise<void>;
+  onVerify: (confirmedAmountMinor?: number, bankCredit?: ConfirmedBankCredit) => void | Promise<void>;
   onReject: (reason: string) => void;
 }) {
   const [reason, setReason] = useState('');
+  const [bankCreditReference, setBankCreditReference] = useState('');
+  const [bankCreditDate, setBankCreditDate] = useState('');
+  const [bankCreditAttested, setBankCreditAttested] = useState(false);
   const [receivedAmount, setReceivedAmount] = useState('');
   const [amountConfirmed, setAmountConfirmed] = useState(false);
   const [showAmountConfirmation, setShowAmountConfirmation] = useState(false);
@@ -261,6 +269,7 @@ export function PaymentReviewSection({
   const isV2 = isV2PaymentProof(data);
   const validV2 = isV2 && hasValidV2PaymentProof(data, paymentId);
   const flexibleAmountProof = validV2 && data.amountContractVersion === 2;
+  const bankReported = validV2 && data.evidenceType === 'bank_credit_report';
   const unsupportedAmountContract =
     isV2 && data.amountContractVersion != null && data.amountContractVersion !== 2;
   const receivedMinor = parseInrRupeesToMinorUnits(receivedAmount);
@@ -275,11 +284,18 @@ export function PaymentReviewSection({
   );
   const hasReceipt = !!str(data.receiptPath) && (!isV2 || validV2);
   const showReceiptButton = hasReceipt && (!isV2 || canReview);
-  const handleVerify = (confirmedAmountMinor?: number) => {
+  const bankReferenceValid = /^[A-Za-z0-9][A-Za-z0-9\\s./_:-]{3,199}$/.test(bankCreditReference.trim());
+  const bankDateValid = /^\\d{4}-\\d{2}-\\d{2}$/.test(bankCreditDate) &&
+    !Number.isNaN(Date.parse(bankCreditDate)) &&
+    new Date(bankCreditDate + 'T00:00:00Z').toISOString().slice(0, 10) === bankCreditDate;
+  const confirmedBankAmount = flexibleAmountProof ? receivedMinor : claimedMinor;
+  const bankConfirmationReady = bankReferenceValid && bankDateValid &&
+    confirmedBankAmount != null && confirmedBankAmount > 0 && bankCreditAttested;
+  const handleVerify = (confirmedAmountMinor?: number, bankCredit?: ConfirmedBankCredit) => {
     if (verifyLock.current) return;
     verifyLock.current = true;
     setVerifySubmitting(true);
-    void Promise.resolve(onVerify(confirmedAmountMinor)).finally(() => {
+    void Promise.resolve(onVerify(confirmedAmountMinor, bankCredit)).finally(() => {
       verifyLock.current = false;
       setVerifySubmitting(false);
       setShowAmountConfirmation(false);
@@ -299,7 +315,74 @@ export function PaymentReviewSection({
       {validV2 && canReview && isPending && (
         <div className="payment-review-controls">
           <h3>Review controls</h3>
-          {flexibleAmountProof ? (
+          {bankReported ? (
+            <div className="bank-credit-review">
+              <p role="status">Resident reported a UPI payment. The bill remains unpaid until bank credit is confirmed.</p>
+              <p>Review the community receiving bank statement; amount and timestamp alone do not identify the payer.</p>
+              <label>
+                Bank transaction ID / UTR / RRN
+                <input
+                  aria-label="Bank credit transaction reference"
+                  value={bankCreditReference}
+                  maxLength={200}
+                  onChange={(e) => setBankCreditReference(e.target.value)}
+                  disabled={busy || verifySubmitting}
+                  autoComplete="off"
+                />
+              </label>
+              <label>
+                Bank credit date
+                <input
+                  aria-label="Bank credit date"
+                  type="date"
+                  value={bankCreditDate}
+                  onChange={(e) => setBankCreditDate(e.target.value)}
+                  disabled={busy || verifySubmitting}
+                />
+              </label>
+              {flexibleAmountProof ? (
+                <label>
+                  Amount credited (INR)
+                  <input
+                    aria-label="Bank amount credited in INR"
+                    inputMode="decimal"
+                    value={receivedAmount}
+                    onChange={(e) => setReceivedAmount(e.target.value)}
+                    disabled={busy || verifySubmitting}
+                  />
+                </label>
+              ) : (
+                <p>Required bank credit: {formatInrMinorUnits(claimedMinor)}</p>
+              )}
+              {amountMismatch && flexibleAmountProof && (
+                <p role="status">Bank amount differs from resident claim. Settlement uses confirmed bank amount.</p>
+              )}
+              <label>
+                <input
+                  type="checkbox"
+                  checked={bankCreditAttested}
+                  onChange={(e) => setBankCreditAttested(e.target.checked)}
+                  disabled={busy || verifySubmitting}
+                />
+                I confirmed this exact transaction in the community bank and identified the correct resident.
+              </label>
+              <button
+                type="button"
+                className="primary"
+                disabled={busy || verifySubmitting || !bankConfirmationReady}
+                onClick={() => {
+                  if (!bankConfirmationReady || confirmedBankAmount == null) return;
+                  handleVerify(confirmedBankAmount, {
+                    bankCreditReference: bankCreditReference.trim(),
+                    bankCreditDate,
+                    confirmedAmountMinor: confirmedBankAmount,
+                  });
+                }}
+              >
+                {verifySubmitting ? 'Verifying…' : 'Confirm bank credit and settle'}
+              </button>
+            </div>
+          ) : flexibleAmountProof ? (
             <div className="flexible-payment-review">
               <label>
                 Amount received (INR)

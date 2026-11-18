@@ -2065,12 +2065,26 @@ function RecordDetails({
                 setReceipt(URL.createObjectURL(blob));
               })
             }
-            onVerify={(confirmedAmountMinor) =>
+            onVerify={(confirmedAmountMinor, bankCredit) =>
               perform(async () => {
                 if (isV2PaymentProof(d)) {
                   if (!hasValidV2PaymentProof(d, row.id)) return;
                   await currentAuthority(s);
                   try {
+                    if (d.evidenceType === 'bank_credit_report') {
+                      if (!bankCredit || bankCredit.confirmedAmountMinor !== confirmedAmountMinor) {
+                        throw new Error('Bank credit details are required for this payment report.');
+                      }
+                      const result = await call('verifyReportedDirectUpiV2', {
+                        paymentId: row.id,
+                        ...bankCredit,
+                        bankCreditConfirmed: true,
+                      });
+                      if (!isConfirmedV2SettlementResponse(result)) {
+                        throw new Error('The bank-credit settlement response could not be confirmed.');
+                      }
+                      return result;
+                    }
                     const result = await call('verifyPaymentProofV2', {
                       paymentId: row.id,
                       ...(d.amountContractVersion === 2 ? { confirmedAmountMinor } : {}),

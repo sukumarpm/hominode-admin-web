@@ -284,8 +284,8 @@ export function PaymentReviewSection({
   );
   const hasReceipt = !!str(data.receiptPath) && (!isV2 || validV2);
   const showReceiptButton = hasReceipt && (!isV2 || canReview);
-  const bankReferenceValid = /^[A-Za-z0-9][A-Za-z0-9\\s./_:-]{3,199}$/.test(bankCreditReference.trim());
-  const bankDateValid = /^\\d{4}-\\d{2}-\\d{2}$/.test(bankCreditDate) &&
+  const bankReferenceValid = /^[A-Za-z0-9][A-Za-z0-9\s./_:-]{3,199}$/.test(bankCreditReference.trim());
+  const bankDateValid = /^\d{4}-\d{2}-\d{2}$/.test(bankCreditDate) &&
     !Number.isNaN(Date.parse(bankCreditDate)) &&
     new Date(bankCreditDate + 'T00:00:00Z').toISOString().slice(0, 10) === bankCreditDate;
   const confirmedBankAmount = flexibleAmountProof ? receivedMinor : claimedMinor;

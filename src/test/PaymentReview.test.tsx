@@ -457,3 +457,64 @@ it('uses transaction id, bill id, then document id as the payment list reference
   );
   expect(paymentReference({ transactionId: '', billId: null }, 'payment-1')).toBe('payment-1');
 });
+
+it('bank reported V2 UPI requires independently verified credit and never requires receipt image', () => {
+  const data = v2Proof({
+    evidenceType: 'bank_credit_report',
+    receiptPath: null,
+    paymentReference: null,
+    amountContractVersion: 2,
+  });
+  expect(hasValidV2PaymentProof(data, 'proof-1')).toBe(true);
+  expect(hasValidV2PaymentProof({ ...data, receiptPath: 'fake.png' }, 'proof-1')).toBe(false);
+
+  const onVerify = vi.fn();
+  render(
+    <PaymentReviewSection
+      data={data}
+      paymentId="proof-1"
+      canReview
+      busy={false}
+      receipt=""
+      onViewReceipt={noop}
+      onVerify={onVerify}
+      onReject={noop}
+    />,
+  );
+  expect(screen.queryByRole('button', { name: 'View receipt' })).not.toBeInTheDocument();
+  const settle = screen.getByRole('button', { name: 'Confirm bank credit and settle' });
+  expect(settle).toBeDisabled();
+  fireEvent.change(screen.getByRole('textbox', { name: 'Bank credit transaction reference' }), {
+    target: { value: 'RRN987654' },
+  });
+  fireEvent.change(screen.getByLabelText('Bank credit date'), {
+    target: { value: '2026-11-17' },
+  });
+  fireEvent.change(screen.getByRole('textbox', { name: 'Bank amount credited in INR' }), {
+    target: { value: '1234.56' },
+  });
+  expect(settle).toBeDisabled();
+  fireEvent.click(screen.getByRole('checkbox'));
+  expect(settle).toBeEnabled();
+  fireEvent.click(settle);
+  expect(onVerify).toHaveBeenCalledOnce();
+  expect(onVerify).toHaveBeenCalledWith(123456, {
+    bankCreditReference: 'RRN987654',
+    bankCreditDate: '2026-11-17',
+    confirmedAmountMinor: 123456,
+  });
+});
+
+it('bank reported V2 UPI with invalid credit date or missing reference remains blocked', () => {
+  const data = v2Proof({ evidenceType: 'bank_credit_report', receiptPath: null });
+  review(data, true, 'proof-1');
+  const settle = screen.getByRole('button', { name: 'Confirm bank credit and settle' });
+  fireEvent.change(screen.getByRole('textbox', { name: 'Bank credit transaction reference' }), {
+    target: { value: 'RRN4321' },
+  });
+  fireEvent.change(screen.getByLabelText('Bank credit date'), {
+    target: { value: '2026-02-31' },
+  });
+  fireEvent.click(screen.getByRole('checkbox'));
+  expect(settle).toBeDisabled();
+});

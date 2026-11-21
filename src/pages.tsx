@@ -42,6 +42,7 @@ import {
 } from './actions';
 import { AdminCreateButtons, ResidentReview } from './AdminTools';
 import { BillingCreateModal } from './BillingCreateModal';
+import { CreateAdditionalBillModal } from './components/CreateAdditionalBillModal';
 import { CommunityPaymentSettings } from './CommunityPaymentSettings';
 import { Card, Modal, Pill, State } from './components';
 import { CreateRecurringScheduleModal } from './components/CreateRecurringScheduleModal';
@@ -240,6 +241,16 @@ export function V2BillFinancialSummary({
 
   return (
     <div className={compact ? 'v2-bill-summary v2-bill-summary-compact' : 'v2-bill-summary'}>
+      <strong>
+        {data.billingKind === 'ad_hoc'
+          ? 'Additional Bill'
+          : data.billingKind === 'recurring'
+            ? 'Monthly Bill'
+            : 'Unknown Bill'}
+      </strong>
+      {data.billingKind === 'ad_hoc' && str(data.additionalBillReason) && (
+        <p>Reason: {str(data.additionalBillReason)}</p>
+      )}
       {billingPeriod && <p className="v2-bill-period">Billing period: {billingPeriod}</p>}
       <dl className="v2-bill-balances">
         <div>
@@ -515,6 +526,7 @@ function ScopedModule({
     [sortBy, setSortBy] = useState('name'),
     [page, setPage] = useState(0);
   const [createRecurringOpen, setCreateRecurringOpen] = useState(false);
+  const [createAdditionalOpen, setCreateAdditionalOpen] = useState(false);
   const [visitorTab, setVisitorTab] = useState<VisitorQueue>('expected');
   const [params, setParams] = useSearchParams();
   const { entitlement } = useSubscription();
@@ -622,6 +634,11 @@ function ScopedModule({
             <Link className="outline-link" to={base + 'payments'}>
               Payments <ArrowRight size={16} />
             </Link>
+          )}
+          {module === 'billing' && s.role === 'admin' && (
+            <button type="button" onClick={() => setCreateAdditionalOpen(true)}>
+              Create Additional Bill
+            </button>
           )}
           {module === 'billing' && s.role === 'admin' && (
             <button type="button" onClick={() => setCreateRecurringOpen(true)}>
@@ -1230,6 +1247,14 @@ function ScopedModule({
         <CreateRecurringScheduleModal
           s={s}
           onClose={() => setCreateRecurringOpen(false)}
+          onCreated={() => setRevision((value) => value + 1)}
+        />
+      )}
+      {module === 'billing' && s.role === 'admin' && createAdditionalOpen && (
+        <CreateAdditionalBillModal
+          key={`${s.uid}:${s.community?.id}`}
+          s={s}
+          onClose={() => setCreateAdditionalOpen(false)}
           onCreated={() => setRevision((value) => value + 1)}
         />
       )}

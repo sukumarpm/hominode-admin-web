@@ -168,6 +168,44 @@ function mockRows(moduleRows: Partial<Record<Module, Row[]>> = {}) {
 }
 
 describe('Admin Web Billing V2 bill foundation', () => {
+  it.each([
+    ['ad_hoc', 'Additional Bill'],
+    ['recurring', 'Monthly Bill'],
+    [undefined, 'Unknown Bill'],
+    [null, 'Unknown Bill'],
+    ['unrecognized', 'Unknown Bill'],
+    ['Recurring', 'Unknown Bill'],
+  ])('classifies V2 bill kind %s as %s without changing financial values', (billingKind, label) => {
+    render(<V2BillFinancialSummary data={validV2({ billingKind })} />);
+    expect(screen.getByText(label)).toBeTruthy();
+    expect(screen.getByText('₹2,500.00', { selector: 'dd' })).toBeTruthy();
+    expect(screen.getByText('₹1,000.00')).toBeTruthy();
+    expect(screen.getByText('₹300.00')).toBeTruthy();
+    expect(screen.getByText('₹1,200.00')).toBeTruthy();
+  });
+
+  it('shows Additional Bill reason with existing V2 settlement balances', () => {
+    render(
+      <V2BillFinancialSummary
+        data={validV2({ billingKind: 'ad_hoc', additionalBillReason: 'Lift repair' })}
+      />,
+    );
+    expect(screen.getByText('Additional Bill')).toBeTruthy();
+    expect(screen.getByText('Reason: Lift repair')).toBeTruthy();
+    expect(screen.getByText('₹1,000.00')).toBeTruthy();
+    expect(screen.getByText('₹300.00')).toBeTruthy();
+    expect(screen.getByText('₹1,200.00')).toBeTruthy();
+  });
+
+  it('exposes Additional Bill creation only to admins alongside monthly creation', () => {
+    const admin = renderBilling([row(validV2())]);
+    expect(screen.getByRole('button', { name: 'Create Additional Bill' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Create Bill' })).toBeTruthy();
+    admin.unmount();
+    renderBilling([row(validV2())], [], {}, makeSession('resident'));
+    expect(screen.queryByRole('button', { name: 'Create Additional Bill' })).toBeNull();
+  });
+
   it('detects only numeric schemaVersion 2', () => {
     expect(isV2Bill(validV2())).toBe(true);
     expect(isV2Bill({ ...validV2(), schemaVersion: '2' })).toBe(false);

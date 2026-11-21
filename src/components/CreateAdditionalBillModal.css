@@ -1,0 +1,65 @@
+.additional-unit-picker {
+  position: relative;
+  min-width: 0;
+}
+
+.additional-unit-picker input {
+  width: 100%;
+  min-width: 0;
+}
+
+.additional-unit-dropdown {
+  position: absolute;
+  z-index: 5;
+  top: 100%;
+  inset-inline: 0;
+  max-height: min(240px, 40dvh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  padding: 4px;
+}
+
+.additional-unit-option {
+  min-height: 44px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.additional-unit-option.active {
+  background: var(--canvas);
+  color: var(--accent);
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.additional-unit-dropdown > p {
+  padding: 10px 12px;
+  color: var(--muted);
+}
+
+.additional-unit-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.additional-unit-summary > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.additional-unit-summary span {
+  display: block;
+  color: var(--muted);
+}

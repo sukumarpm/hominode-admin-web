@@ -70,7 +70,8 @@ beforeEach(() => {
 });
 
 function fillForm() {
-  fireEvent.click(screen.getByRole('button', { name: 'Tower A · 1203 · Test Resident' }));
+  fireEvent.click(screen.getByRole('combobox', { name: 'Select occupied unit' }));
+  fireEvent.click(screen.getByRole('option', { name: 'Tower A · 1203 · Test Resident' }));
   fireEvent.change(screen.getByLabelText('Billing month'), { target: { value: '2026-11' } });
   fireEvent.change(screen.getByLabelText('Due date'), { target: { value: '2099-11-30' } });
   fireEvent.change(screen.getByLabelText('Reason'), { target: { value: 'Lift repair' } });
@@ -334,20 +335,157 @@ describe('Additional Bill contract', () => {
 });
 
 describe('Additional Bill form', () => {
+  it('starts collapsed and opens on click or focus', () => {
+    render(<CreateAdditionalBillModal s={session} onClose={vi.fn()} onCreated={vi.fn()} />);
+    const input = screen.getByRole('combobox', { name: 'Select occupied unit' });
+    expect(input).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('listbox')).toBeNull();
+    fireEvent.click(input);
+    expect(input).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('listbox', { name: 'Occupied units' })).toBeTruthy();
+    fireEvent.keyDown(input, { key: 'Escape' });
+    expect(screen.queryByRole('listbox')).toBeNull();
+    fireEvent.focus(input);
+    expect(screen.getByRole('listbox')).toBeTruthy();
+  });
+
+  it.each(['tower a', '1203', 'test resident'])(
+    'filters by building, unit or resident: %s',
+    (search) => {
+      render(<CreateAdditionalBillModal s={session} onClose={vi.fn()} onCreated={vi.fn()} />);
+      const input = screen.getByRole('combobox', { name: 'Select occupied unit' });
+      fireEvent.click(input);
+      fireEvent.change(input, { target: { value: search } });
+      expect(screen.getByRole('option', { name: 'Tower A · 1203 · Test Resident' })).toBeTruthy();
+    },
+  );
+
   it('searches units, collapses selection, displays resident and permits reselection', () => {
     render(<CreateAdditionalBillModal s={session} onClose={vi.fn()} onCreated={vi.fn()} />);
-    fireEvent.change(screen.getByLabelText('Search occupied units'), {
+    fireEvent.click(screen.getByLabelText('Select occupied unit'));
+    fireEvent.change(screen.getByLabelText('Select occupied unit'), {
       target: { value: 'absent' },
     });
     expect(screen.getByText('No matching eligible occupied units.')).toBeTruthy();
-    fireEvent.change(screen.getByLabelText('Search occupied units'), {
+    fireEvent.change(screen.getByLabelText('Select occupied unit'), {
       target: { value: 'Test Resident' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Tower A · 1203 · Test Resident' }));
-    expect(screen.queryByLabelText('Search occupied units')).toBeNull();
+    fireEvent.click(screen.getByRole('option', { name: 'Tower A · 1203 · Test Resident' }));
+    expect(screen.queryByLabelText('Select occupied unit')).toBeNull();
+    expect(screen.queryByRole('listbox')).toBeNull();
     expect(screen.getByText('Resident: Test Resident')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Change unit' }));
-    expect(screen.getByLabelText('Search occupied units')).toBeTruthy();
+    expect(screen.getByLabelText('Select occupied unit')).toHaveFocus();
+    expect(screen.getByRole('listbox')).toBeTruthy();
+  });
+
+  it('dismisses on outside pointer, focus leaving, or Escape without closing the modal', () => {
+    const onClose = vi.fn();
+    render(<CreateAdditionalBillModal s={session} onClose={onClose} onCreated={vi.fn()} />);
+    const input = screen.getByRole('combobox', { name: 'Select occupied unit' });
+    fireEvent.click(input);
+    fireEvent.pointerDown(screen.getByLabelText('Reason'));
+    expect(screen.queryByRole('listbox')).toBeNull();
+    fireEvent.click(input);
+    fireEvent.blur(input, { relatedTarget: screen.getByLabelText('Billing month') });
+    expect(screen.queryByRole('listbox')).toBeNull();
+    fireEvent.click(input);
+    fireEvent.keyDown(input, { key: 'Escape' });
+    expect(screen.queryByRole('listbox')).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('navigates options by keyboard and selects with Enter without submitting', () => {
+    const extraUnit = {
+      id: 'unit-2',
+      data: { ...units[0].data, flatLabel: '1204', residentUserId: 'resident-2' },
+    };
+    const extraResident = {
+      id: 'resident-2',
+      data: { ...residentData, uid: 'resident-2', flatId: 'unit-2', name: 'Second Resident' },
+    };
+    vi.mocked(useRows).mockImplementation((_s, module) => ({
+      rows:
+        module === 'units'
+          ? [...units, extraUnit]
+          : module === 'residents'
+            ? [...residents, extraResident]
+            : buildings,
+      loading: false,
+      error: '',
+      refresh: vi.fn(),
+    }));
+    const submitBill = vi.fn();
+    render(
+      <CreateAdditionalBillModal
+        s={session}
+        onClose={vi.fn()}
+        onCreated={vi.fn()}
+        submitBill={submitBill}
+      />,
+    );
+    const input = screen.getByRole('combobox', { name: 'Select occupied unit' });
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    expect(input).toHaveAttribute('aria-activedescendant', screen.getAllByRole('option')[0].id);
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    expect(input).toHaveAttribute('aria-activedescendant', screen.getAllByRole('option')[1].id);
+    fireEvent.keyDown(input, { key: 'ArrowUp' });
+    expect(input).toHaveAttribute('aria-activedescendant', screen.getAllByRole('option')[0].id);
+    fireEvent.keyDown(input, { key: 'End' });
+    expect(input).toHaveAttribute('aria-activedescendant', screen.getAllByRole('option')[1].id);
+    fireEvent.keyDown(input, { key: 'Home' });
+    expect(input).toHaveAttribute('aria-activedescendant', screen.getAllByRole('option')[0].id);
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(screen.queryByRole('listbox')).toBeNull();
+    expect(screen.getByText('Resident: Test Resident')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Change unit' })).toHaveFocus();
+    expect(submitBill).not.toHaveBeenCalled();
+  });
+
+  it('preserves billing values and current selection when reopening or dismissing the picker', () => {
+    vi.mocked(useRows).mockImplementation((_s, module) => ({
+      rows:
+        module === 'units'
+          ? [
+              ...units,
+              {
+                id: 'unit-2',
+                data: { ...units[0].data, flatLabel: '1204', residentUserId: 'resident-2' },
+              },
+            ]
+          : module === 'residents'
+            ? [
+                ...residents,
+                {
+                  id: 'resident-2',
+                  data: {
+                    ...residentData,
+                    uid: 'resident-2',
+                    flatId: 'unit-2',
+                    name: 'Second Resident',
+                  },
+                },
+              ]
+            : buildings,
+      loading: false,
+      error: '',
+      refresh: vi.fn(),
+    }));
+    render(<CreateAdditionalBillModal s={session} onClose={vi.fn()} onCreated={vi.fn()} />);
+    fillForm();
+    fireEvent.click(screen.getByRole('button', { name: 'Change unit' }));
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Select occupied unit' }), {
+      key: 'Escape',
+    });
+    expect(screen.getByText('Resident: Test Resident')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Change unit' }));
+    fireEvent.click(screen.getByRole('option', { name: 'Tower A · 1204 · Second Resident' }));
+    expect(screen.getByText('Resident: Second Resident')).toBeTruthy();
+    expect(screen.getByLabelText('Billing month')).toHaveValue('2026-11');
+    expect(screen.getByLabelText('Due date')).toHaveValue('2099-11-30');
+    expect(screen.getByLabelText('Reason')).toHaveValue('Lift repair');
+    expect(screen.getByLabelText('Amount (INR)')).toHaveValue('100.50');
+    expect(screen.getByText('Review total: ₹100.50')).toBeTruthy();
   });
   it('persists before submission and prevents double submit', async () => {
     let resolve!: (result: AdditionalBillResult) => void;

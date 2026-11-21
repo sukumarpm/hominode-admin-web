@@ -1,4 +1,5 @@
-import { useRef, useState, type FormEvent } from 'react';
+import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
+import './CreateAdditionalBillModal.css';
 import { Modal } from '../components';
 import { useRows } from '../data';
 import { formatInrMinorUnits, type Session } from '../models';
@@ -16,6 +17,176 @@ import {
 } from '../additionalBill';
 
 type DraftLine = { lineId: string; code: AdditionalChargeCode; label: string; amount: string };
+
+function OccupiedUnitPicker({
+  options,
+  value,
+  onChange,
+  disabled,
+}: {
+  options: ReturnType<typeof occupiedBillUnits>;
+  value: string;
+  onChange: (id: string) => void;
+  disabled: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const root = useRef<HTMLDivElement>(null);
+  const input = useRef<HTMLInputElement>(null);
+  const changeButton = useRef<HTMLButtonElement>(null);
+  const restoreFocus = useRef(false);
+  const listId = useId();
+  const selected = options.find((unit) => unit.id === value);
+  const matches = options.filter((unit) =>
+    `${unit.buildingName} ${unit.label} ${unit.residentName}`
+      .toLowerCase()
+      .includes(search.trim().toLowerCase()),
+  );
+  const activeOptionId = open && matches[activeIndex] ? `${listId}-${activeIndex}` : undefined;
+
+  useEffect(() => {
+    if (!open) {
+      if (restoreFocus.current) changeButton.current?.focus();
+      restoreFocus.current = false;
+      return;
+    }
+    input.current?.focus();
+    function dismiss(event: PointerEvent) {
+      if (event.target instanceof Node && !root.current?.contains(event.target)) setOpen(false);
+    }
+    document.addEventListener('pointerdown', dismiss);
+    return () => document.removeEventListener('pointerdown', dismiss);
+  }, [open]);
+
+  useEffect(() => {
+    if (activeOptionId)
+      document.getElementById(activeOptionId)?.scrollIntoView?.({ block: 'nearest' });
+  }, [activeOptionId]);
+
+  function choose(id: string) {
+    restoreFocus.current = true;
+    onChange(id);
+    setOpen(false);
+    setSearch('');
+    setActiveIndex(-1);
+  }
+
+  return (
+    <div
+      className="additional-unit-picker"
+      ref={root}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
+      }}
+    >
+      {selected && !open ? (
+        <div className="additional-unit-summary">
+          <div>
+            <strong>
+              {selected.buildingName} · {selected.label}
+            </strong>
+            <span>Resident: {selected.residentName}</span>
+          </div>
+          <button
+            ref={changeButton}
+            type="button"
+            disabled={disabled}
+            onClick={() => {
+              setSearch('');
+              setActiveIndex(-1);
+              setOpen(true);
+            }}
+          >
+            Change unit
+          </button>
+        </div>
+      ) : (
+        <>
+          <label>
+            Select occupied unit
+            <input
+              ref={input}
+              role="combobox"
+              aria-autocomplete="list"
+              aria-expanded={open}
+              aria-controls={listId}
+              aria-activedescendant={activeOptionId}
+              autoComplete="off"
+              value={search}
+              disabled={disabled}
+              placeholder="Building, unit or resident"
+              onClick={() => setOpen(true)}
+              onFocus={() => setOpen(true)}
+              onChange={(event) => {
+                setSearch(event.target.value);
+                setActiveIndex(-1);
+                setOpen(true);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape' && open) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  restoreFocus.current = !!selected;
+                  setOpen(false);
+                  setActiveIndex(-1);
+                } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                  event.preventDefault();
+                  setOpen(true);
+                  if (matches.length)
+                    setActiveIndex((index) =>
+                      event.key === 'ArrowDown'
+                        ? (index + 1) % matches.length
+                        : index <= 0
+                          ? matches.length - 1
+                          : index - 1,
+                    );
+                } else if (event.key === 'Enter') {
+                  // Enter in the picker must never submit the billing form.
+                  event.preventDefault();
+                  if (open && matches[activeIndex]) choose(matches[activeIndex].id);
+                  else setOpen(true);
+                } else if (
+                  open &&
+                  (event.key === 'Home' || event.key === 'End') &&
+                  matches.length
+                ) {
+                  event.preventDefault();
+                  setActiveIndex(event.key === 'Home' ? 0 : matches.length - 1);
+                }
+              }}
+            />
+          </label>
+          {open && !disabled && (
+            <div className="additional-unit-dropdown">
+              <div role="listbox" id={listId} aria-label="Occupied units">
+                {matches.map((unit, index) => (
+                  <div
+                    key={unit.id}
+                    id={`${listId}-${index}`}
+                    role="option"
+                    aria-selected={unit.id === value}
+                    className={
+                      index === activeIndex
+                        ? 'additional-unit-option active'
+                        : 'additional-unit-option'
+                    }
+                    onPointerMove={() => setActiveIndex(index)}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => choose(unit.id)}
+                  >
+                    {unit.buildingName} · {unit.label} · {unit.residentName}
+                  </div>
+                ))}
+              </div>
+              {!matches.length && <p role="status">No matching eligible occupied units.</p>}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
 
 function readAttempt(key: string, communityId: string): AdditionalBillRequest | null {
   const raw = localStorage.getItem(key);
@@ -62,7 +233,6 @@ export function CreateAdditionalBillModal({
   const [period, setPeriod] = useState(today.slice(0, 7));
   const [dueDate, setDueDate] = useState('');
   const [reason, setReason] = useState('');
-  const [search, setSearch] = useState('');
   const [flatId, setFlatId] = useState('');
   const [lines, setLines] = useState<DraftLine[]>([
     { lineId: 'line-1', code: 'other', label: '', amount: '' },
@@ -74,11 +244,6 @@ export function CreateAdditionalBillModal({
   const loadError = units.error || buildings.error || residents.error;
   const eligible = occupiedBillUnits(communityId, units.rows, residents.rows, buildings.rows);
   const selected = eligible.find((unit) => unit.id === flatId);
-  const matches = eligible.filter((unit) =>
-    `${unit.label} ${unit.buildingName} ${unit.residentName}`
-      .toLowerCase()
-      .includes(search.trim().toLowerCase()),
-  );
   const amounts = lines.map((line) => parseAdditionalAmount(line.amount));
   const total = amounts.every((amount) => amount !== null)
     ? amounts.reduce<number>((sum, amount) => sum + amount!, 0)
@@ -242,60 +407,12 @@ export function CreateAdditionalBillModal({
                   Occupied units could not be loaded. Reopen this dialog to retry.
                 </p>
               )}
-              {selected ? (
-                <div className="financial-report-card">
-                  <p>
-                    <strong>
-                      {selected.buildingName} · {selected.label}
-                    </strong>
-                  </p>
-                  <p>Resident: {selected.residentName}</p>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setFlatId('');
-                      setSearch('');
-                    }}
-                  >
-                    Change unit
-                  </button>
-                </div>
-              ) : (
-                <>
-                  <label>
-                    Search occupied units
-                    <input
-                      type="search"
-                      value={search}
-                      disabled={loading || !!loadError}
-                      onChange={(event) => setSearch(event.target.value)}
-                      placeholder="Building, unit or resident"
-                    />
-                  </label>
-                  {!loading && !loadError && (
-                    <div
-                      role="group"
-                      aria-label="Occupied units"
-                      style={{ maxHeight: 220, overflowY: 'auto' }}
-                    >
-                      {matches.length ? (
-                        matches.map((unit) => (
-                          <button
-                            key={unit.id}
-                            type="button"
-                            className="outline-link"
-                            onClick={() => setFlatId(unit.id)}
-                          >
-                            {unit.buildingName} · {unit.label} · {unit.residentName}
-                          </button>
-                        ))
-                      ) : (
-                        <p role="status">No matching eligible occupied units.</p>
-                      )}
-                    </div>
-                  )}
-                </>
-              )}
+              <OccupiedUnitPicker
+                options={eligible}
+                value={flatId}
+                onChange={setFlatId}
+                disabled={busy || !!initial.error || loading || !!loadError}
+              />
               <label>
                 Billing month
                 <input
